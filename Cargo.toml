@@ -1,0 +1,26 @@
+[package]
+name = "casper-delta-bot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+casper-delta-contracts = { path = "../casper-delta/casper-delta-contracts" }
+casper_trade_contracts = { path = "../casper-trade/casper_trade_contracts" }
+styks-contracts = { git = "https://github.com/odradev/styks.git", branch = "feature/casper-shorts-client" }
+odra = { version = "2.5.0" }
+odra-cli = { version = "2.5.0"}
+dotenv = "0.15"
+chrono = "0.4"
+
+# [workspace.dependencies.styks-contracts]
+# git = "https://github.com/odradev/styks.git"
+# branch = "feature/casper-shorts-client"
+# features = []
+
+[dev-dependencies]
+odra-test = { version = "2.5.0" }
+mockall = "0.14.0"
+
+[[bin]]
+name = "bot"
+path = "src/bin/cli.rs"

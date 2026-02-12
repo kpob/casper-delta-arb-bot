@@ -1,0 +1,51 @@
+last_updated = "2025-10-06T08:53:19Z"
+
+[[contracts]]
+name = "Market"
+package_name = "Market"
+package_hash = "hash-4b15cdbc606589ebfdcdb3f8f81e2a2a0d44298e3d1faf0743d2be2d90d8cb6b"
+
+[[contracts]]
+name = "WrappedNativeToken"
+package_name = "WrappedNativeToken"
+package_hash = "hash-8df5d26790e18cf0404502c62ce5dc9025800ad6975c97466e20506c39c505b6"
+
+[[contracts]]
+name = "PositionToken"
+package_name = "CD_SHORT"
+package_hash = "hash-d65a7e04b687bd873af5819de67d563ff347560dfef16ad2c1065cac3e115b96"
+
+[[contracts]]
+name = "PositionToken"
+package_name = "CD_LONG"
+package_hash = "hash-30f66fc8f60ee99e7a8a05c3a308ee623c229247c0cc7ac8dc76621157397a93"
+
+[[contracts]]
+name = "Pair"
+package_name = "CD_LONG-WCSPR LP"
+package_hash = "hash-0846e67a3309a78522b41bcbe08ed833f8ba472868a1da8fe5fa5cb131f94bcd"
+
+[[contracts]]
+name = "Pair"
+package_name = "WCSPR-CD_SHORT LP"
+package_hash = "hash-a838440915d6e20870d06232028e9990e68f92efe5bdb68500dad0be683f3e07"
+
+[[contracts]]
+name = "Factory"
+package_name = "Factory"
+package_hash = "hash-021571608a8acdf7a75f5bc31189510df468b405c799519675f658f83c707c28"
+
+[[contracts]]
+name = "PairFactory"
+package_name = "PairFactory"
+package_hash = "hash-ed008d21dcdfddda69a830c9c9329ba8507af8b749da1470b4ed8083d6402e15"
+
+[[contracts]]
+name = "Router"
+package_name = "Router"
+package_hash = "hash-1dbac65585475fec53e5b1f9110923c8d232921702097e83105b36751d682186"
+
+[[contracts]]
+name = "StyksPriceFeed"
+package_name = "StyksPriceFeed"
+package_hash = "hash-814fedbd4ae53b82ab19b1ff6698ce412445c3266271fcb639986d37dc0ae121"

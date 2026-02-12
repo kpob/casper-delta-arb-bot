@@ -1,0 +1,110 @@
+use std::fmt::Display;
+
+use odra::casper_types::U256;
+
+use crate::bot::path::Path;
+
+const DECIMAL_PLACES: u32 = 9;
+
+#[derive(Debug)]
+pub struct PriceData {
+    pub long_price: f64,
+    pub short_price: f64,
+    pub wcspr_price: f64,
+    pub long_fair_price: f64,
+    pub short_fair_price: f64,
+    pub long_diff: f64,
+    pub short_diff: f64,
+    pub longs_for_one_usd: u64,
+    pub shorts_for_one_usd: u64,
+    pub wcspr_for_one_usd: u64,
+}
+
+impl PriceData {
+    pub fn new(
+        long_price: f64,
+        short_price: f64,
+        wcspr_price: f64,
+        long_fair_price: f64,
+        short_fair_price: f64,
+    ) -> Self {
+        let long_diff = (long_price / long_fair_price) * 100.0f64 - 100.0f64;
+        let short_diff = (short_price / short_fair_price) * 100.0f64 - 100.0f64;
+        let longs_for_one_usd = (1.0f64 / wcspr_price / long_fair_price) as u64;
+        let shorts_for_one_usd = (1.0f64 / wcspr_price / short_fair_price) as u64;
+        let wcspr_for_one_usd = (1.0f64 / wcspr_price) as u64;
+
+        Self {
+            long_price,
+            short_price,
+            wcspr_price,
+            long_fair_price,
+            short_fair_price,
+            long_diff,
+            short_diff,
+            longs_for_one_usd,
+            shorts_for_one_usd,
+            wcspr_for_one_usd,
+        }
+    }
+
+    fn shorts_amount_per_usd(&self) -> U256 {
+        U256::from(self.shorts_for_one_usd * 10u64.pow(DECIMAL_PLACES))
+    }
+
+    fn longs_amount_per_usd(&self) -> U256 {
+        U256::from(self.longs_for_one_usd * 10u64.pow(DECIMAL_PLACES))
+    }
+
+    fn wcspr_amount_per_usd(&self) -> U256 {
+        U256::from(self.wcspr_for_one_usd * 10u64.pow(DECIMAL_PLACES))
+    }
+
+    pub fn amount_per_one_usd(&self, path: Path) -> U256 {
+        match path {
+            Path::LongWcsprShort => self.longs_amount_per_usd(),
+            Path::ShortWcsprLong => self.shorts_amount_per_usd(),
+            Path::LongWcspr => self.longs_amount_per_usd(),
+            Path::ShortWcspr => self.shorts_amount_per_usd(),
+            Path::WcsprLong => self.wcspr_amount_per_usd(),
+            Path::WcsprShort => self.wcspr_amount_per_usd(),
+            Path::Empty => U256::zero(),
+        }
+    }
+}
+
+impl Display for PriceData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "======================\n")?;
+        write!(
+            f,
+            "Long price: {} CSPR\nShort price: {} CSPR\nWCSPR price: {} USD\nLong fair price: {} CSPR\nShort fair price: {} CSPR\n",
+            self.long_price,
+            self.short_price,
+            self.wcspr_price,
+            self.long_fair_price,
+            self.short_fair_price
+        )?;
+        if self.long_diff > 0.0f64 {
+            write!(f, "Long diff overvalued by {:.2}%\n", self.long_diff)?;
+        } else {
+            write!(f, "Long diff undervalued by {:.2}%\n", self.long_diff.abs())?;
+        }
+        if self.short_diff > 0.0f64 {
+            write!(f, "Short diff overvalued by {:.2}%\n", self.short_diff)?;
+        } else {
+            write!(
+                f,
+                "Short diff undervalued by {:.2}%\n",
+                self.short_diff.abs()
+            )?;
+        }
+        write!(
+            f,
+            "Long/USD: {}\nShort/USD: {}\n",
+            self.longs_for_one_usd, self.shorts_for_one_usd
+        )?;
+        write!(f, "===========================\n")?;
+        Ok(())
+    }
+}
