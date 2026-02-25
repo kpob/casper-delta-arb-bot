@@ -62,28 +62,6 @@ impl Scenario for UnwrapWcspr {
     }
 }
 
-pub struct BotSetup;
-
-impl ScenarioMetadata for BotSetup {
-    const NAME: &'static str = "BotSetup";
-    const DESCRIPTION: &'static str = "Sets up the environment for the bot.";
-}
-
-impl Scenario for BotSetup {
-    fn run(
-        &self,
-        env: &HostEnv,
-        container: &DeployedContractsContainer,
-        _args: Args,
-    ) -> Result<(), Error> {
-        let contracts = ContractRefs::new(env, container);
-        let token_manager = RealTokenManager::new(env, &contracts);
-
-        token_manager.approve_markets()?;
-        Ok(())
-    }
-}
-
 pub struct Bot;
 
 impl ScenarioMetadata for Bot {
@@ -121,6 +99,8 @@ impl Scenario for Bot {
 
         loop {
             tracing::info!("Current time: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+
+            token_manager.approve_markets()?;
 
             let price_data = self.get_price_data(&calc)?;
             tracing::info!("{}", price_data);
