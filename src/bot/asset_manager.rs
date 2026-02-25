@@ -214,28 +214,28 @@ impl<'a> AssetManager<'a> {
     ) -> Result<(), Error> {
         let cspr_balance = self.balances.my_cspr_balance()?;
         if cspr_balance < MIN_CSPR_BALANCE.into() {
-            odra_cli::log(&format!(
+            tracing::warn!(
                 "CSPR balance low ({:.2} CSPR), unwrapping {:.2} wCSPR",
                 humanize_balance(cspr_balance),
                 humanize_balance(UNWRAP_AMOUNT.into()),
-            ));
+            );
             self.token_manager.unwrap_wcspr(UNWRAP_AMOUNT.into())?;
             return Ok(());
         }
 
         let wcspr_balance = self.balances.my_wcspr_balance()?;
         if wcspr_balance < MIN_WCSPR_BALANCE.into() {
-            odra_cli::log(&format!(
+            tracing::warn!(
                 "wCSPR balance low ({:.2} CSPR), selling positions for wCSPR",
                 humanize_balance(wcspr_balance),
-            ));
+            );
             let long_balance = self.balances.my_long_balance()?;
             let short_balance = self.balances.my_short_balance()?;
             let long_cspr_value = long_balance.as_u64() as f64 * price_data.long_price;
             let short_cspr_value = short_balance.as_u64() as f64 * price_data.short_price;
 
             if long_cspr_value >= short_cspr_value {
-                odra_cli::log("Selling longs for wCSPR");
+                tracing::info!("Selling longs for wCSPR");
                 // amount_in_max: how many longs needed to receive UNWRAP_AMOUNT wCSPR,
                 // with 5% slippage tolerance
                 let amount_in = (UNWRAP_AMOUNT as f64 / price_data.long_price * 1.05) as u64;
@@ -246,7 +246,7 @@ impl<'a> AssetManager<'a> {
                     recipient,
                 )?;
             } else {
-                odra_cli::log("Selling shorts for wCSPR");
+                tracing::info!("Selling shorts for wCSPR");
                 let amount_in = (UNWRAP_AMOUNT as f64 / price_data.short_price * 1.05) as u64;
                 self.token_manager.swap(
                     Path::ShortWcspr,
@@ -261,12 +261,10 @@ impl<'a> AssetManager<'a> {
     }
 
     pub fn print_balances(&self) -> Result<(), Error> {
-        odra_cli::log("===== Balances =====");
         log_humanized("CSPR balance", self.balances.my_cspr_balance()?);
         log_humanized("WCSPR balance", self.balances.my_wcspr_balance()?);
         log_humanized("Long balance", self.balances.my_long_balance()?);
         log_humanized("Short balance", self.balances.my_short_balance()?);
-        odra_cli::log("====================");
         Ok(())
     }
 
@@ -277,7 +275,7 @@ impl<'a> AssetManager<'a> {
             Path::WcsprLong | Path::WcsprShort => self.top_up_wcspr_if_required(amount_in)?,
             Path::Empty => panic!("Empty path is not supported"),
         }
-        odra_cli::log("Funds for swap ready!");
+        tracing::info!("Funds for swap ready!");
         Ok(())
     }
 
@@ -286,9 +284,9 @@ impl<'a> AssetManager<'a> {
         log_humanized("Required balance", required_balance);
         log_humanized("LONG balance", long_balance);
         if long_balance < required_balance {
-            odra_cli::log("Not enough longs, topping up");
+            tracing::warn!("Not enough longs, topping up");
             if self.balances.my_wcspr_balance()? < TOP_UP_AMOUNT.into() {
-                odra_cli::log("Not enough wcspr to top up longs, wrapping cspr");
+                tracing::warn!("Not enough wcspr to top up longs, wrapping cspr");
                 self.wrap_cspr()?;
             }
             self.token_manager.buy_longs()?;
@@ -302,9 +300,9 @@ impl<'a> AssetManager<'a> {
         log_humanized("Required balance", required_balance);
         log_humanized("SHORT balance", short_balance);
         if short_balance < required_balance {
-            odra_cli::log("Not enough shorts, topping up");
+            tracing::warn!("Not enough shorts, topping up");
             if self.balances.my_wcspr_balance()? < TOP_UP_AMOUNT.into() {
-                odra_cli::log("Not enough wcspr to top up shorts, wrapping cspr");
+                tracing::warn!("Not enough wcspr to top up shorts, wrapping cspr");
                 self.wrap_cspr()?;
             }
             self.token_manager.buy_shorts()?;
@@ -319,7 +317,7 @@ impl<'a> AssetManager<'a> {
         log_humanized("Required WCSPR balance", required_balance);
         log_humanized("Current WCSPR balance", wcspr_balance);
         if wcspr_balance < required_balance {
-            odra_cli::log("Not enough wcspr, topping up");
+            tracing::warn!("Not enough wcspr, topping up");
             self.wrap_cspr()?;
             log_humanized("New WCSPR balance", self.balances.my_wcspr_balance()?);
         }
@@ -344,7 +342,7 @@ fn humanize_balance(balance: U256) -> f64 {
 }
 
 fn log_humanized(label: &str, balance: U256) {
-    odra_cli::log(&format!("{}: {:.2}", label, humanize_balance(balance)));
+    tracing::info!("{}: {:.2}", label, humanize_balance(balance));
 }
 
 #[cfg(test)]

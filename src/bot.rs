@@ -48,19 +48,16 @@ impl Scenario for UnwrapWcspr {
         let wcspr_balance = contracts.wcspr()?.balance_of(&me);
 
         if wcspr_balance.is_zero() {
-            odra_cli::log("No wCSPR to unwrap");
+            tracing::info!("No wCSPR to unwrap");
             return Ok(());
         }
 
         let amount: U256 = args.get_single("amount").unwrap_or(wcspr_balance);
 
-        odra_cli::log(&format!(
-            "Unwrapping {:.2} wCSPR",
-            amount.as_u64() as f64 / 1_000_000_000.0
-        ));
+        tracing::info!("Unwrapping {:.2} wCSPR", amount.as_u64() as f64 / 1_000_000_000.0);
         env.set_gas(cspr!(4));
         contracts.wcspr()?.try_withdraw(&amount)?;
-        odra_cli::log("Unwrapped successfully");
+        tracing::info!("Unwrapped successfully");
         Ok(())
     }
 }
@@ -115,7 +112,7 @@ impl Scenario for Bot {
 
         let dry_run = args.get_single("dry-run").unwrap_or(false);
         if dry_run {
-            println!("Dry run mode enabled");
+            tracing::info!("Dry run mode enabled");
         }
         let balances = RealBalances::new(env, &contracts);
         let token_manager = RealTokenManager::new(env, &contracts);
@@ -123,20 +120,17 @@ impl Scenario for Bot {
         asset_manager.print_balances()?;
 
         loop {
-            odra_cli::log(&format!(
-                "Current time: {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-            ));
+            tracing::info!("Current time: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
 
             let price_data = self.get_price_data(&calc)?;
-            odra_cli::log(&price_data);
+            tracing::info!("{}", price_data);
 
             asset_manager.manage_asset_levels(&price_data, caller)?;
 
             let path = Path::from(&price_data);
-            odra_cli::log(&format!("Swap path: {:?}", path));
+            tracing::info!("Swap path: {:?}", path);
             if path == Path::Empty {
-                odra_cli::log("No arbitrage path found\n");
+                tracing::info!("No arbitrage path found");
                 self.cool_down();
                 continue;
             }
@@ -145,14 +139,14 @@ impl Scenario for Bot {
             if let Ok([amount_in, .., amount_out]) = amounts.as_deref() {
                 let gain =
                     PriceCalculator::calc_gains_in_cspr(*amount_in, *amount_out, &price_data, path);
-                odra_cli::log(&format!("Gain: {:<10.4} CSPR", gain));
+                tracing::info!("Gain: {:<10.4} CSPR", gain);
                 if gain < 1.0f64 {
-                    odra_cli::log("No arbitrage path found\n");
+                    tracing::info!("No arbitrage path found");
                     self.cool_down();
                     continue;
                 }
                 if dry_run {
-                    odra_cli::log("Dry run mode - no swap completed");
+                    tracing::info!("Dry run mode - no swap completed");
                     self.cool_down();
                     continue;
                 }
@@ -165,9 +159,9 @@ impl Scenario for Bot {
                     &price_data,
                     path,
                 );
-                odra_cli::log(&format!("Actual gain: {:<10.4} CSPR", actual_gain));
+                tracing::info!("Actual gain: {:<10.4} CSPR", actual_gain);
             } else {
-                odra_cli::log("No valid swap amounts found\n");
+                tracing::info!("No valid swap amounts found");
             }
             self.cool_down();
         }
@@ -183,9 +177,9 @@ impl Bot {
         amount_out: U256,
         recipient: Address,
     ) -> Result<(U256, U256), Error> {
-        println!("Preparing swap...");
+        tracing::info!("Preparing swap...");
         let result = asset_manager.swap(path, amount_in, amount_out, recipient)?;
-        odra_cli::log("Arbitrage swap completed");
+        tracing::info!("Arbitrage swap completed");
         asset_manager.print_balances()?;
 
         if let [amount_in, .., amount_out] = result.as_slice() {
@@ -211,8 +205,7 @@ impl Bot {
     }
 
     fn cool_down(&self) {
-        odra_cli::log("Sleeping for 3 minutes...");
-        odra_cli::log("=======================\n");
+        tracing::info!("Sleeping for 3 minutes...");
         sleep(Duration::from_secs(180));
     }
 }
