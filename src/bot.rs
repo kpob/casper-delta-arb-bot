@@ -95,12 +95,11 @@ impl Scenario for Bot {
         let balances = RealBalances::new(env, &contracts);
         let token_manager = RealTokenManager::new(env, &contracts);
         let asset_manager = AssetManager::new(&balances, &token_manager);
+        token_manager.approve_markets()?;
         asset_manager.print_balances()?;
 
         loop {
             tracing::info!("Current time: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
-
-            token_manager.approve_markets()?;
 
             let price_data = self.get_price_data(&calc)?;
             tracing::info!("{}", price_data);
