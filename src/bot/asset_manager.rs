@@ -6,9 +6,12 @@ use odra::{
 };
 use odra_cli::{cspr, scenario::Error};
 
-use crate::bot::{contracts::ContractRefs, path::Path};
+use crate::bot::{contracts::ContractRefs, data::PriceData, path::Path};
 
 const TOP_UP_AMOUNT: u64 = 2_000_000_000_000; // 2_000 cspr
+const MIN_CSPR_BALANCE: u64 = 100_000_000_000; // 100 CSPR
+const MIN_WCSPR_BALANCE: u64 = 1_500_000_000_000; // 1_500 CSPR
+const UNWRAP_AMOUNT: u64 = 1_500_000_000_000; // 1_500 CSPR
 
 #[cfg(test)]
 use mockall::automock;
@@ -25,6 +28,7 @@ pub trait Balances {
 pub trait TokenManager {
     fn approve_markets(&self) -> Result<(), Error>;
     fn wrap_cspr(&self) -> Result<(), Error>;
+    fn unwrap_wcspr(&self, amount: U256) -> Result<(), Error>;
     fn buy_longs(&self) -> Result<(), Error>;
     fn buy_shorts(&self) -> Result<(), Error>;
     fn swap(
@@ -91,6 +95,12 @@ impl TokenManager for RealTokenManager<'_> {
             .wcspr()?
             .with_tokens(TOP_UP_AMOUNT.into())
             .try_deposit()?;
+        Ok(())
+    }
+
+    fn unwrap_wcspr(&self, amount: U256) -> Result<(), Error> {
+        self.env.set_gas(cspr!(4));
+        self.refs.wcspr()?.try_withdraw(&amount)?;
         Ok(())
     }
 
@@ -195,6 +205,59 @@ impl<'a> AssetManager<'a> {
             .token_manager
             .swap(path, amount_in, amount_out, recipient)?;
         Ok(result)
+    }
+
+    pub fn manage_asset_levels(
+        &self,
+        price_data: &PriceData,
+        recipient: Address,
+    ) -> Result<(), Error> {
+        let cspr_balance = self.balances.my_cspr_balance()?;
+        if cspr_balance < MIN_CSPR_BALANCE.into() {
+            odra_cli::log(&format!(
+                "CSPR balance low ({:.2} CSPR), unwrapping {:.2} wCSPR",
+                humanize_balance(cspr_balance),
+                humanize_balance(UNWRAP_AMOUNT.into()),
+            ));
+            self.token_manager.unwrap_wcspr(UNWRAP_AMOUNT.into())?;
+            return Ok(());
+        }
+
+        let wcspr_balance = self.balances.my_wcspr_balance()?;
+        if wcspr_balance < MIN_WCSPR_BALANCE.into() {
+            odra_cli::log(&format!(
+                "wCSPR balance low ({:.2} CSPR), selling positions for wCSPR",
+                humanize_balance(wcspr_balance),
+            ));
+            let long_balance = self.balances.my_long_balance()?;
+            let short_balance = self.balances.my_short_balance()?;
+            let long_cspr_value = long_balance.as_u64() as f64 * price_data.long_price;
+            let short_cspr_value = short_balance.as_u64() as f64 * price_data.short_price;
+
+            if long_cspr_value >= short_cspr_value {
+                odra_cli::log("Selling longs for wCSPR");
+                // amount_in_max: how many longs needed to receive UNWRAP_AMOUNT wCSPR,
+                // with 5% slippage tolerance
+                let amount_in = (UNWRAP_AMOUNT as f64 / price_data.long_price * 1.05) as u64;
+                self.token_manager.swap(
+                    Path::LongWcspr,
+                    U256::from(amount_in),
+                    UNWRAP_AMOUNT.into(),
+                    recipient,
+                )?;
+            } else {
+                odra_cli::log("Selling shorts for wCSPR");
+                let amount_in = (UNWRAP_AMOUNT as f64 / price_data.short_price * 1.05) as u64;
+                self.token_manager.swap(
+                    Path::ShortWcspr,
+                    U256::from(amount_in),
+                    UNWRAP_AMOUNT.into(),
+                    recipient,
+                )?;
+            }
+        }
+
+        Ok(())
     }
 
     pub fn print_balances(&self) -> Result<(), Error> {
@@ -782,5 +845,175 @@ mod tests {
         assert_eq!(humanize_balance(U256::from(2_500_000_000u64)), 2.5);
         assert_eq!(humanize_balance(U256::from(1_234_567_890u64)), 1.23456789);
         assert_eq!(humanize_balance(U256::zero()), 0.0);
+    }
+
+    // ========== manage_asset_levels Tests ==========
+
+    fn make_price_data(long_price: f64, short_price: f64) -> PriceData {
+        // wcspr_price in USD; fair prices equal DEX prices (no arb opportunity needed here)
+        PriceData::new(long_price, short_price, 0.04, long_price, short_price)
+    }
+
+    #[test]
+    fn test_manage_asset_levels_unwraps_when_cspr_low() {
+        let (env, mut refs, mut token_manager) = setup_test_env();
+
+        refs.expect_my_cspr_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(MIN_CSPR_BALANCE - 1)));
+
+        token_manager
+            .expect_unwrap_wcspr()
+            .times(1)
+            .withf(|&amount| amount == U256::from(UNWRAP_AMOUNT))
+            .return_once(|_| Ok(()));
+
+        let asset_manager = AssetManager::new(&refs, &token_manager);
+        let price_data = make_price_data(0.75, 0.75);
+        assert!(asset_manager
+            .manage_asset_levels(&price_data, env.caller())
+            .is_ok());
+    }
+
+    #[test]
+    fn test_manage_asset_levels_sells_longs_when_wcspr_low_and_longs_more_valuable() {
+        let (env, mut refs, mut token_manager) = setup_test_env();
+
+        refs.expect_my_cspr_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(MIN_CSPR_BALANCE)));
+        refs.expect_my_wcspr_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(MIN_WCSPR_BALANCE - 1)));
+        // 5_000 longs @ 0.75 CSPR = 3_750 CSPR value
+        refs.expect_my_long_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(5_000_000_000_000u64)));
+        // 1_000 shorts @ 0.75 CSPR = 750 CSPR value
+        refs.expect_my_short_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(1_000_000_000_000u64)));
+
+        token_manager
+            .expect_swap()
+            .times(1)
+            .withf(|path, _, amount_out, _| {
+                *path == Path::LongWcspr && *amount_out == U256::from(UNWRAP_AMOUNT)
+            })
+            .return_once(|_, _, _, _| Ok(vec![U256::from(UNWRAP_AMOUNT)]));
+
+        let asset_manager = AssetManager::new(&refs, &token_manager);
+        let price_data = make_price_data(0.75, 0.75);
+        assert!(asset_manager
+            .manage_asset_levels(&price_data, env.caller())
+            .is_ok());
+    }
+
+    #[test]
+    fn test_manage_asset_levels_sells_shorts_when_wcspr_low_and_shorts_more_valuable() {
+        let (env, mut refs, mut token_manager) = setup_test_env();
+
+        refs.expect_my_cspr_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(MIN_CSPR_BALANCE)));
+        refs.expect_my_wcspr_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(MIN_WCSPR_BALANCE - 1)));
+        // 1_000 longs @ 0.75 = 750 CSPR value
+        refs.expect_my_long_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(1_000_000_000_000u64)));
+        // 5_000 shorts @ 0.75 = 3_750 CSPR value
+        refs.expect_my_short_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(5_000_000_000_000u64)));
+
+        token_manager
+            .expect_swap()
+            .times(1)
+            .withf(|path, _, amount_out, _| {
+                *path == Path::ShortWcspr && *amount_out == U256::from(UNWRAP_AMOUNT)
+            })
+            .return_once(|_, _, _, _| Ok(vec![U256::from(UNWRAP_AMOUNT)]));
+
+        let asset_manager = AssetManager::new(&refs, &token_manager);
+        let price_data = make_price_data(0.75, 0.75);
+        assert!(asset_manager
+            .manage_asset_levels(&price_data, env.caller())
+            .is_ok());
+    }
+
+    #[test]
+    fn test_manage_asset_levels_uses_price_to_determine_amount_in() {
+        // With long_price = 0.5, to get 1500 wCSPR we need 1500/0.5 * 1.05 = 3150 longs
+        let (env, mut refs, mut token_manager) = setup_test_env();
+
+        refs.expect_my_cspr_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(MIN_CSPR_BALANCE)));
+        refs.expect_my_wcspr_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(MIN_WCSPR_BALANCE - 1)));
+        refs.expect_my_long_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(5_000_000_000_000u64)));
+        refs.expect_my_short_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(1_000_000_000_000u64)));
+
+        let expected_amount_in =
+            (UNWRAP_AMOUNT as f64 / 0.5f64 * 1.05) as u64;
+        token_manager
+            .expect_swap()
+            .times(1)
+            .withf(move |path, amount_in, _, _| {
+                *path == Path::LongWcspr && *amount_in == U256::from(expected_amount_in)
+            })
+            .return_once(|_, _, _, _| Ok(vec![U256::from(UNWRAP_AMOUNT)]));
+
+        let asset_manager = AssetManager::new(&refs, &token_manager);
+        let price_data = make_price_data(0.5, 0.75);
+        assert!(asset_manager
+            .manage_asset_levels(&price_data, env.caller())
+            .is_ok());
+    }
+
+    #[test]
+    fn test_manage_asset_levels_does_nothing_when_balances_sufficient() {
+        let (env, mut refs, token_manager) = setup_test_env();
+
+        refs.expect_my_cspr_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(MIN_CSPR_BALANCE)));
+        refs.expect_my_wcspr_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(MIN_WCSPR_BALANCE)));
+
+        let asset_manager = AssetManager::new(&refs, &token_manager);
+        let price_data = make_price_data(0.75, 0.75);
+        assert!(asset_manager
+            .manage_asset_levels(&price_data, env.caller())
+            .is_ok());
+    }
+
+    #[test]
+    fn test_manage_asset_levels_prefers_unwrap_over_sell_when_cspr_critically_low() {
+        // When CSPR is low, should unwrap wCSPR and NOT proceed to check wCSPR level
+        let (env, mut refs, mut token_manager) = setup_test_env();
+
+        refs.expect_my_cspr_balance()
+            .times(1)
+            .return_once(|| Ok(U256::zero()));
+
+        token_manager
+            .expect_unwrap_wcspr()
+            .times(1)
+            .return_once(|_| Ok(()));
+
+        let asset_manager = AssetManager::new(&refs, &token_manager);
+        let price_data = make_price_data(0.75, 0.75);
+        assert!(asset_manager
+            .manage_asset_levels(&price_data, env.caller())
+            .is_ok());
     }
 }
