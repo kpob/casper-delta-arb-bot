@@ -62,28 +62,6 @@ impl Scenario for UnwrapWcspr {
     }
 }
 
-pub struct BotSetup;
-
-impl ScenarioMetadata for BotSetup {
-    const NAME: &'static str = "BotSetup";
-    const DESCRIPTION: &'static str = "Sets up the environment for the bot.";
-}
-
-impl Scenario for BotSetup {
-    fn run(
-        &self,
-        env: &HostEnv,
-        container: &DeployedContractsContainer,
-        _args: Args,
-    ) -> Result<(), Error> {
-        let contracts = ContractRefs::new(env, container);
-        let token_manager = RealTokenManager::new(env, &contracts);
-
-        token_manager.approve_markets()?;
-        Ok(())
-    }
-}
-
 pub struct Bot;
 
 impl ScenarioMetadata for Bot {
@@ -117,6 +95,7 @@ impl Scenario for Bot {
         let balances = RealBalances::new(env, &contracts);
         let token_manager = RealTokenManager::new(env, &contracts);
         let asset_manager = AssetManager::new(&balances, &token_manager);
+        token_manager.approve_markets()?;
         asset_manager.print_balances()?;
 
         loop {
