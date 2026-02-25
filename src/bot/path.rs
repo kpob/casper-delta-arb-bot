@@ -285,4 +285,21 @@ mod tests {
         );
         assert_eq!(Path::calc(&data), Path::Empty);
     }
+
+    #[test]
+    fn test_path_calc_threshold_exactly_at_threshold_returns_empty() {
+        // Long diff = exactly 2.5%: price = 1.025, fair = 1.0
+        // diff = (1.025 / 1.0) * 100 - 100 = 2.5
+        // The guard is `long_diff > DIFF_THRESHOLD` (strict >), so 2.5 is NOT actionable
+        let data = PriceData::new(1.025, 1.0, 1.0, 1.0, 1.0);
+        assert_eq!(Path::calc(&data), Path::Empty);
+    }
+
+    #[test]
+    fn test_path_calc_threshold_just_above_threshold_returns_path() {
+        // Long diff = 2.6% (price = 1.026, fair = 1.0), short at parity
+        // Strictly above threshold → should produce LongWcspr
+        let data = PriceData::new(1.026, 1.0, 1.0, 1.0, 1.0);
+        assert_eq!(Path::calc(&data), Path::LongWcspr);
+    }
 }

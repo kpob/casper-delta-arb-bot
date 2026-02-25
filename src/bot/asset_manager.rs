@@ -1014,4 +1014,125 @@ mod tests {
             .manage_asset_levels(&price_data, env.caller())
             .is_ok());
     }
+
+    // ========== Error Path Tests ==========
+
+    #[test]
+    fn test_swap_propagates_error_from_token_manager() {
+        let (env, mut refs, mut token_manager) = setup_test_env();
+
+        refs.expect_my_long_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(1000)));
+        token_manager
+            .expect_swap()
+            .times(1)
+            .return_once(|_, _, _, _| {
+                Err(Error::OdraError {
+                    message: "swap failed".to_string(),
+                })
+            });
+
+        let asset_manager = AssetManager::new(&refs, &token_manager);
+        let result = asset_manager.swap(
+            Path::LongWcsprShort,
+            U256::from(100),
+            U256::from(50),
+            env.caller(),
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_manage_asset_levels_propagates_cspr_balance_error() {
+        let (env, mut refs, token_manager) = setup_test_env();
+        let price_data = make_price_data(0.5, 0.5);
+
+        refs.expect_my_cspr_balance()
+            .times(1)
+            .return_once(|| Err(Error::OdraError {
+                message: "balance fetch failed".to_string(),
+            }));
+
+        let asset_manager = AssetManager::new(&refs, &token_manager);
+        assert!(asset_manager
+            .manage_asset_levels(&price_data, env.caller())
+            .is_err());
+    }
+
+    #[test]
+    fn test_manage_asset_levels_propagates_wcspr_balance_error() {
+        let (env, mut refs, token_manager) = setup_test_env();
+        let price_data = make_price_data(0.5, 0.5);
+
+        // CSPR balance is fine (above MIN_CSPR_BALANCE)
+        refs.expect_my_cspr_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(MIN_CSPR_BALANCE)));
+        // wCSPR balance fetch fails
+        refs.expect_my_wcspr_balance()
+            .times(1)
+            .return_once(|| Err(Error::OdraError {
+                message: "wcspr balance fetch failed".to_string(),
+            }));
+
+        let asset_manager = AssetManager::new(&refs, &token_manager);
+        assert!(asset_manager
+            .manage_asset_levels(&price_data, env.caller())
+            .is_err());
+    }
+
+    #[test]
+    fn test_manage_asset_levels_propagates_unwrap_wcspr_error() {
+        // CSPR balance below MIN_CSPR_BALANCE → calls unwrap_wcspr → returns Err
+        let (env, mut refs, mut token_manager) = setup_test_env();
+        let price_data = make_price_data(0.5, 0.5);
+
+        refs.expect_my_cspr_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(50_000_000_000u64))); // 50 CSPR < 100 CSPR min
+        token_manager
+            .expect_unwrap_wcspr()
+            .times(1)
+            .return_once(|_| Err(Error::OdraError {
+                message: "unwrap failed".to_string(),
+            }));
+
+        let asset_manager = AssetManager::new(&refs, &token_manager);
+        assert!(asset_manager
+            .manage_asset_levels(&price_data, env.caller())
+            .is_err());
+    }
+
+    #[test]
+    fn test_wrap_cspr_returns_error_when_cspr_insufficient_for_top_up() {
+        // Path::WcsprLong → top_up_wcspr_if_required → wrap_cspr
+        // wCSPR balance is zero → triggers wrap_cspr
+        // CSPR balance is below TOP_UP_AMOUNT → wrap_cspr returns Err
+        let (env, mut refs, token_manager) = setup_test_env();
+
+        refs.expect_my_wcspr_balance()
+            .times(1)
+            .return_once(|| Ok(U256::zero()));
+        // CSPR balance is 100 CSPR, but TOP_UP_AMOUNT is 2000 CSPR
+        refs.expect_my_cspr_balance()
+            .times(1)
+            .return_once(|| Ok(U256::from(100_000_000_000u64)));
+
+        let asset_manager = AssetManager::new(&refs, &token_manager);
+        let result = asset_manager.swap(
+            Path::WcsprLong,
+            U256::from(1_000_000_000_000u64),
+            U256::from(50),
+            env.caller(),
+        );
+
+        assert!(result.is_err());
+        if let Err(Error::OdraError { message }) = result {
+            assert!(message.contains("Not enough cspr to wrap"));
+        } else {
+            panic!("Expected OdraError");
+        }
+    }
 }
