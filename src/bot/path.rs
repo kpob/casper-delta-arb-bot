@@ -1,7 +1,7 @@
 use odra::prelude::{Address, Addressable};
 use odra_cli::scenario::Error;
 
-use crate::bot::{contracts::ContractRefs, data::PriceData};
+use crate::{bot::data::PriceData, contracts::ContractRefs};
 
 const DIFF_THRESHOLD: f64 = 2.5f64;
 

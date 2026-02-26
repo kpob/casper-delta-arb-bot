@@ -6,7 +6,10 @@ use odra::{
 };
 use odra_cli::{cspr, scenario::Error};
 
-use crate::bot::{contracts::ContractRefs, data::PriceData, path::Path};
+use crate::{
+    bot::{data::PriceData, path::Path},
+    contracts::ContractRefs,
+};
 
 const TOP_UP_AMOUNT: u64 = 2_000_000_000_000; // 2_000 cspr
 const MIN_CSPR_BALANCE: u64 = 100_000_000_000; // 100 CSPR
@@ -959,8 +962,7 @@ mod tests {
             .times(1)
             .return_once(|| Ok(U256::from(1_000_000_000_000u64)));
 
-        let expected_amount_in =
-            (UNWRAP_AMOUNT as f64 / 0.5f64 * 1.05) as u64;
+        let expected_amount_in = (UNWRAP_AMOUNT as f64 / 0.5f64 * 1.05) as u64;
         token_manager
             .expect_swap()
             .times(1)

@@ -1,7 +1,10 @@
 use odra::{casper_types::U256, prelude::Addressable};
 use odra_cli::scenario::Error;
 
-use crate::bot::{contracts::ContractRefs, data::PriceData, path::Path};
+use crate::{
+    bot::{data::PriceData, path::Path},
+    contracts::ContractRefs,
+};
 
 pub(super) struct PriceCalculator<'a> {
     contracts: &'a ContractRefs<'a>,
