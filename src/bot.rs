@@ -56,15 +56,12 @@ impl Scenario for Bot {
         asset_manager.print_balances()?;
 
         loop {
-            tracing::info!(
-                "Current time: {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-            );
-
             let price_data = self.get_price_data(&calc)?;
-            tracing::info!("{}", price_data);
+            price_data.log();
 
-            asset_manager.manage_asset_levels(&price_data, caller)?;
+            if !dry_run {
+                asset_manager.manage_asset_levels(&price_data, caller)?;
+            }
 
             let path = Path::from(&price_data);
             tracing::info!("Swap path: {:?}", path);

@@ -73,38 +73,37 @@ impl PriceData {
     }
 }
 
+impl PriceData {
+    pub fn log(&self) {
+        tracing::info!(
+            long_price = self.long_price,
+            short_price = self.short_price,
+            wcspr_price = self.wcspr_price,
+            long_fair_price = self.long_fair_price,
+            short_fair_price = self.short_fair_price,
+            "DEX prices (CSPR)"
+        );
+        tracing::info!(
+            long_diff = format!("{:+.2}%", self.long_diff),
+            short_diff = format!("{:+.2}%", self.short_diff),
+            "Price deviations from fair value"
+        );
+        tracing::info!(
+            longs_per_usd = self.longs_for_one_usd,
+            shorts_per_usd = self.shorts_for_one_usd,
+            wcspr_per_usd = self.wcspr_for_one_usd,
+            "Token amounts per USD"
+        );
+    }
+}
+
 impl Display for PriceData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "======================\n")?;
-        write!(
-            f,
-            "Long price: {} CSPR\nShort price: {} CSPR\nWCSPR price: {} USD\nLong fair price: {} CSPR\nShort fair price: {} CSPR\n",
-            self.long_price,
-            self.short_price,
-            self.wcspr_price,
-            self.long_fair_price,
-            self.short_fair_price
-        )?;
-        if self.long_diff > 0.0f64 {
-            write!(f, "Long diff overvalued by {:.2}%\n", self.long_diff)?;
-        } else {
-            write!(f, "Long diff undervalued by {:.2}%\n", self.long_diff.abs())?;
-        }
-        if self.short_diff > 0.0f64 {
-            write!(f, "Short diff overvalued by {:.2}%\n", self.short_diff)?;
-        } else {
-            write!(
-                f,
-                "Short diff undervalued by {:.2}%\n",
-                self.short_diff.abs()
-            )?;
-        }
-        write!(
-            f,
-            "Long/USD: {}\nShort/USD: {}\n",
-            self.longs_for_one_usd, self.shorts_for_one_usd
-        )?;
-        write!(f, "===========================\n")?;
-        Ok(())
+        writeln!(f, "========================")?;
+        writeln!(f, "Long:  {:.6} CSPR  (fair {:.6}, diff {:+.2}%)", self.long_price, self.long_fair_price, self.long_diff)?;
+        writeln!(f, "Short: {:.6} CSPR  (fair {:.6}, diff {:+.2}%)", self.short_price, self.short_fair_price, self.short_diff)?;
+        writeln!(f, "WCSPR: {:.6} USD", self.wcspr_price)?;
+        writeln!(f, "Per USD — Long: {}  Short: {}  WCSPR: {}", self.longs_for_one_usd, self.shorts_for_one_usd, self.wcspr_for_one_usd)?;
+        writeln!(f, "========================")
     }
 }
