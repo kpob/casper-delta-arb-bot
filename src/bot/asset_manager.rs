@@ -144,6 +144,41 @@ impl TokenManager for RealTokenManager<'_> {
     }
 }
 
+pub struct DryRunTokenManager;
+
+impl TokenManager for DryRunTokenManager {
+    fn approve_markets(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn wrap_cspr(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn unwrap_wcspr(&self, _amount: U256) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn buy_longs(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn buy_shorts(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn swap(
+        &self,
+        _path: Path,
+        amount_in: U256,
+        amount_out: U256,
+        _recipient: Address,
+    ) -> Result<Vec<U256>, Error> {
+        tracing::info!("Dry run - swap skipped");
+        Ok(vec![amount_in, amount_out])
+    }
+}
+
 pub struct RealBalances<'a> {
     env: &'a HostEnv,
     refs: &'a ContractRefs<'a>,

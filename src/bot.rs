@@ -8,7 +8,7 @@ use odra_cli::{
     DeployedContractsContainer,
 };
 
-use crate::bot::asset_manager::{RealBalances, RealTokenManager, TokenManager};
+use crate::bot::asset_manager::{DryRunTokenManager, RealBalances, RealTokenManager, TokenManager};
 use crate::bot::{
     asset_manager::AssetManager, data::PriceData, path::Path, utils::PriceCalculator,
 };
@@ -46,12 +46,9 @@ impl Scenario for Bot {
         let caller = env.caller();
 
         let dry_run = args.get_single("dry-run").unwrap_or(false);
-        if dry_run {
-            tracing::info!("Dry run mode enabled");
-        }
+        let token_manager = self.build_token_manager(dry_run, env, &contracts);
         let balances = RealBalances::new(env, &contracts);
-        let token_manager = RealTokenManager::new(env, &contracts);
-        let asset_manager = AssetManager::new(&balances, &token_manager);
+        let asset_manager = AssetManager::new(&balances, &*token_manager);
         token_manager.approve_markets()?;
         asset_manager.print_balances()?;
 
@@ -59,9 +56,7 @@ impl Scenario for Bot {
             let price_data = self.get_price_data(&calc)?;
             price_data.log();
 
-            if !dry_run {
-                asset_manager.manage_asset_levels(&price_data, caller)?;
-            }
+            asset_manager.manage_asset_levels(&price_data, caller)?;
 
             let path = Path::from(&price_data);
             tracing::info!("Swap path: {:?}", path);
@@ -78,11 +73,6 @@ impl Scenario for Bot {
                 tracing::info!("Gain: {:<10.4} CSPR", gain);
                 if gain < 1.0f64 {
                     tracing::info!("No arbitrage path found");
-                    self.cool_down();
-                    continue;
-                }
-                if dry_run {
-                    tracing::info!("Dry run mode - no swap completed");
                     self.cool_down();
                     continue;
                 }
@@ -138,6 +128,20 @@ impl Bot {
             long_fair_price,
             short_fair_price,
         ))
+    }
+
+    fn build_token_manager<'a>(
+        &self,
+        dry_run: bool,
+        env: &'a HostEnv,
+        contracts: &'a ContractRefs<'a>,
+    ) -> Box<dyn TokenManager + 'a> {
+        if dry_run {
+            tracing::info!("Dry run mode enabled");
+            Box::new(DryRunTokenManager)
+        } else {
+            Box::new(RealTokenManager::new(env, contracts))
+        }
     }
 
     fn cool_down(&self) {
