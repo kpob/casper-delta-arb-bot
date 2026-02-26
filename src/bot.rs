@@ -1,8 +1,8 @@
-use std::{thread::sleep, time::Duration};
+use std::time::Duration;
 
 use odra::host::HostEnv;
 use odra::prelude::*;
-use odra::{casper_types::U256, schema::casper_contract_schema::NamedCLType};
+use odra::schema::casper_contract_schema::NamedCLType;
 use odra_cli::{
     scenario::{Args, Error, Scenario, ScenarioMetadata},
     DeployedContractsContainer,
@@ -10,12 +10,17 @@ use odra_cli::{
 
 use crate::bot::asset_manager::{DryRunTokenManager, RealBalances, RealTokenManager, TokenManager};
 use crate::bot::{
-    asset_manager::AssetManager, data::PriceData, path::Path, utils::PriceCalculator,
+    asset_manager::AssetManager, utils::PriceCalculator,
 };
 use crate::contracts::ContractRefs;
 
+use self::engine::BotEngine;
+use self::events::{EventSource, TimerEventSource};
+
 mod asset_manager;
 mod data;
+mod engine;
+mod events;
 mod path;
 mod utils;
 
@@ -52,84 +57,24 @@ impl Scenario for Bot {
         token_manager.approve_markets()?;
         asset_manager.print_balances()?;
 
-        loop {
-            let price_data = self.get_price_data(&calc)?;
-            price_data.log();
+        let engine = BotEngine::new(calc, asset_manager, &contracts, caller);
+        let mut event_source = TimerEventSource::new(Duration::from_secs(180));
 
-            asset_manager.manage_asset_levels(&price_data, caller)?;
-
-            let path = Path::from(&price_data);
-            tracing::info!("Swap path: {:?}", path);
-            if path == Path::Empty {
-                tracing::info!("No arbitrage path found");
-                self.cool_down();
-                continue;
-            }
-
-            let amounts = get_swap_amounts(&contracts, &price_data, path);
-            if let Ok([amount_in, .., amount_out]) = amounts.as_deref() {
-                let gain =
-                    PriceCalculator::calc_gains_in_cspr(*amount_in, *amount_out, &price_data, path);
-                tracing::info!("Gain: {:<10.4} CSPR", gain);
-                if gain < 1.0f64 {
-                    tracing::info!("No arbitrage path found");
-                    self.cool_down();
-                    continue;
+        while let Some(event) = event_source.next_event() {
+            tracing::info!("Event: {:?}", event);
+            match engine.handle_event(&event) {
+                Ok(true) => continue,
+                Ok(false) => break,
+                Err(e) => {
+                    tracing::error!("Error handling event: {:?}", e);
                 }
-
-                let (actual_amount_in, actual_amount_out) =
-                    self.swap(&asset_manager, path, *amount_in, *amount_out, caller)?;
-                let actual_gain = PriceCalculator::calc_gains_in_cspr(
-                    actual_amount_in,
-                    actual_amount_out,
-                    &price_data,
-                    path,
-                );
-                tracing::info!("Actual gain: {:<10.4} CSPR", actual_gain);
-            } else {
-                tracing::info!("No valid swap amounts found");
             }
-            self.cool_down();
         }
+        Ok(())
     }
 }
 
 impl Bot {
-    fn swap(
-        &self,
-        asset_manager: &AssetManager,
-        path: Path,
-        amount_in: U256,
-        amount_out: U256,
-        recipient: Address,
-    ) -> Result<(U256, U256), Error> {
-        tracing::info!("Preparing swap...");
-        let result = asset_manager.swap(path, amount_in, amount_out, recipient)?;
-        tracing::info!("Arbitrage swap completed");
-        asset_manager.print_balances()?;
-
-        if let [amount_in, .., amount_out] = result.as_slice() {
-            Ok((*amount_in, *amount_out))
-        } else {
-            Err(Error::OdraError {
-                message: "Invalid swap result".to_string(),
-            })
-        }
-    }
-
-    fn get_price_data(&self, calc: &PriceCalculator) -> Result<PriceData, Error> {
-        let (long_price, short_price) = calc.casper_trade_prices()?;
-        let (long_fair_price, short_fair_price, wcspr_price) = calc.fair_prices()?;
-
-        Ok(PriceData::new(
-            long_price,
-            short_price,
-            wcspr_price,
-            long_fair_price,
-            short_fair_price,
-        ))
-    }
-
     fn build_token_manager<'a>(
         &self,
         dry_run: bool,
@@ -142,32 +87,5 @@ impl Bot {
         } else {
             Box::new(RealTokenManager::new(env, contracts))
         }
-    }
-
-    fn cool_down(&self) {
-        tracing::info!("Sleeping for 3 minutes...");
-        sleep(Duration::from_secs(180));
-    }
-}
-
-fn get_swap_amounts(
-    refs: &ContractRefs,
-    price_data: &PriceData,
-    path: Path,
-) -> Result<Vec<U256>, Error> {
-    let amount_in = price_data.amount_per_one_usd(path);
-    let path = path.build(refs)?;
-    let amounts = refs
-        .router()?
-        .try_get_amounts_out(amount_in, path)
-        .map_err(|e| Error::OdraError {
-            message: format!("Failed to get amounts out: {:?}", e),
-        })?;
-    if let [amount_in, .., amount_out] = amounts.as_slice() {
-        Ok(vec![*amount_in, *amount_out])
-    } else {
-        Err(Error::OdraError {
-            message: "Invalid swap result".to_string(),
-        })
     }
 }

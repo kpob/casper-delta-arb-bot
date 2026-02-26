@@ -14,11 +14,6 @@ chrono = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# [workspace.dependencies.styks-contracts]
-# git = "https://github.com/odradev/styks.git"
-# branch = "feature/casper-shorts-client"
-# features = []
-
 [dev-dependencies]
 odra-test = { version = "2.5.0" }
 mockall = "0.14.0"
