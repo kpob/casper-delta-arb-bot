@@ -4,3 +4,5 @@ dry-run:
 run:
 	cargo run --bin  bot -- -c contracts-main.toml scenario Bot
 	
+build:
+	cargo build --bin bot
