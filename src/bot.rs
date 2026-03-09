@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use odra::host::HostEnv;
 use odra::prelude::*;
 use odra::schema::casper_contract_schema::NamedCLType;
@@ -15,7 +13,7 @@ use crate::bot::{
 use crate::contracts::ContractRefs;
 
 use self::engine::BotEngine;
-use self::events::{EventSource, TimerEventSource};
+use self::events::{EventSource, KafkaConfig, KafkaEventSource};
 
 mod asset_manager;
 mod data;
@@ -58,7 +56,16 @@ impl Scenario for Bot {
         asset_manager.print_balances()?;
 
         let engine = BotEngine::new(calc, asset_manager, &contracts, caller);
-        let mut event_source = TimerEventSource::new(Duration::from_secs(180));
+        let config = KafkaConfig::from_env();
+        tracing::info!(
+            "Connecting to Kafka at {}",
+            config.bootstrap_servers,
+        );
+        let relevant_addresses = vec![
+            contracts.long()?.address().to_string(),
+            contracts.short()?.address().to_string(),
+        ];
+        let mut event_source = KafkaEventSource::new(config, relevant_addresses);
 
         while let Some(event) = event_source.next_event() {
             tracing::info!("Event: {:?}", event);

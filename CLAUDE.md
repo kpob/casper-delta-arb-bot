@@ -32,13 +32,12 @@ cargo test <test_name>
 
 ## Architecture
 
-The bot uses the [Odra framework](https://github.com/odradev/odra) for Casper contract interaction. Scenarios (`BotSetup`, `Bot`) are Odra CLI entry points registered in `src/bin/cli.rs`.
+The bot uses the [Odra framework](https://github.com/odradev/odra) for Casper contract interaction. Scenarios (`UnwrapWcspr`, `Bot`) are Odra CLI entry points registered in `src/bin/cli.rs`.
 
-### Bot Loop (`src/bot/bot.rs`)
-Runs every 180 seconds:
-1. Fetch current DEX prices and fair prices from on-chain state
-2. Calculate `Path` based on price deviations
-3. If estimated profit > 1.0 CSPR, execute the swap path via Router
+### Bot Engine (`src/bot/engine.rs`)
+1. Listens for `BotEvent`s (price changes, trade executions) via Kafka.
+2. On event, fetches current market data (reserves, fair prices) and calculates potential arbitrage paths.
+3. If a path exceeds the 2.5% price deviation threshold and has an estimated gain > 1.0 CSPR, it executes the swap (or simulates it in dry-run mode).
 
 ### Key Modules
 
@@ -51,6 +50,8 @@ Runs every 180 seconds:
 - **`src/bot/data.rs`** — `PriceData` struct capturing all market prices, fair prices, deviations, and conversion ratios. Implements `Display` for formatted output.
 
 - **`src/bot/contracts.rs`** — `ContractRefs` wrapper that retrieves deployed contracts (Router, Pairs, Market, WCSPR, Position tokens) from `ContractProvider`.
+
+- **`src/bot/events.rs`** — `BotEvent` enum for internal event handling. Listens to Kafka topics for price changes and trade executions, triggering the bot engine accordingly.
 
 ### External Dependencies
 
@@ -71,4 +72,3 @@ Deployed contract package hashes are stored in `contracts-main.toml` (Casper mai
 | Price diff threshold | 2.5% |
 | Minimum profit to execute | 1.0 CSPR |
 | Balance top-up amount | 2,000 CSPR |
-| Loop interval | 180 seconds |

@@ -37,7 +37,7 @@ impl<'a> BotEngine<'a> {
     #[instrument(skip(self))]
     pub fn handle_event(&self, event: &BotEvent) -> Result<bool, Error> {
         match event {
-            BotEvent::TimerTick | BotEvent::TradeExecuted { .. } | BotEvent::PriceChanged { .. } => {
+            BotEvent::TimerTick | BotEvent::TradeExecuted| BotEvent::PriceChanged=> {
                 self.check_and_trade()?;
                 Ok(true)
             }
@@ -69,7 +69,7 @@ impl<'a> BotEngine<'a> {
                 PriceCalculator::calc_gains_in_cspr(*amount_in, *amount_out, &price_data, path);
             tracing::info!("Gain: {:<10.4} CSPR", gain);
             if gain < 1.0f64 {
-                tracing::info!("No arbitrage path found");
+                tracing::info!("Gain below threshold, skipping swap");
                 return Ok(());
             }
 
@@ -100,6 +100,7 @@ impl<'a> BotEngine<'a> {
         ))
     }
 
+    #[instrument(skip(self))]
     fn swap(&self, path: Path, amount_in: U256, amount_out: U256) -> Result<(U256, U256), Error> {
         tracing::info!("Preparing swap...");
         let result = self
