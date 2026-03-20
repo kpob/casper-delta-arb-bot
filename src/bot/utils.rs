@@ -30,7 +30,7 @@ impl<'a> PriceCalculator<'a> {
     pub(super) fn fair_prices(&self) -> Result<(f64, f64, f64), Error> {
         let market = self.contracts.market()?;
         let state = market
-            .get_address_market_state(market.address())
+            .try_get_address_market_state(market.address())?
             .market_state;
         let long_token_price = Self::calculate_price(state.long_liquidity, state.long_total_supply);
         let short_token_price =
