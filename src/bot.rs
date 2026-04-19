@@ -19,6 +19,7 @@ mod asset_manager;
 mod data;
 mod engine;
 mod events;
+mod liquid_staking;
 mod path;
 mod utils;
 
