@@ -1,3 +1,4 @@
+use liquid_staking_contracts::token::{StakedCSPR, StakedCSPRHostRef};
 use casper_delta_contracts::{
     market::{Market, MarketHostRef},
     position_token::{PositionToken, PositionTokenHostRef},
@@ -56,5 +57,15 @@ impl<'a> ContractRefs<'a> {
         Ok(self
             .container
             .contract_ref_named::<PositionToken>(self.env, Some("CD_SHORT".to_string()))?)
+    }
+
+    pub fn staked_cspr(&self) -> Result<StakedCSPRHostRef, Error> {
+        Ok(self.container.contract_ref::<StakedCSPR>(self.env)?)
+    }
+
+    pub fn wcspr_stcspr_pair(&self) -> Result<PairHostRef, Error> {
+        Ok(self
+            .container
+            .contract_ref_named::<Pair>(self.env, Some("WCSPR-StCSPR LP".to_string()))?)
     }
 }

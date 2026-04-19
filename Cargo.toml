@@ -7,6 +7,7 @@ edition = "2021"
 casper-delta-contracts = { path = "../casper-delta/casper-delta-contracts" }
 casper_trade_contracts = { path = "../casper-trade/casper_trade_contracts" }
 styks-contracts = { git = "https://github.com/odradev/styks.git", branch = "feature/casper-shorts-client" }
+liquid-staking-contracts = { git = "https://github.com/casper-ecosystem/liquid-staking-contracts", branch = "develop" }
 odra = { version = "2.5.0" }
 odra-cli = { version = "2.5.0"}
 dotenv = "0.15"

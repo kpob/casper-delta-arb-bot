@@ -49,3 +49,13 @@ package_hash = "hash-1dbac65585475fec53e5b1f9110923c8d232921702097e83105b36751d6
 name = "StyksPriceFeed"
 package_name = "StyksPriceFeed"
 package_hash = "hash-814fedbd4ae53b82ab19b1ff6698ce412445c3266271fcb639986d37dc0ae121"
+
+[[contracts]]
+name = "StakedCSPR"
+package_name = "StakedCSPR"
+package_hash = "hash-d08ca0c6b4d567a671b5a26f51fb78333ffce403544d19a09a93ebb7c04a6a53"
+
+[[contracts]]
+name = "Pair"
+package_name = "WCSPR-StCSPR LP"
+package_hash = "hash-99227bb4082ce12f9198651c7eec88dbdb290030da1dfe17cef487bd7d2fe68b"
