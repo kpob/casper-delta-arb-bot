@@ -1,4 +1,3 @@
-use liquid_staking_contracts::token::{StakedCSPR, StakedCSPRHostRef};
 use casper_delta_contracts::{
     market::{Market, MarketHostRef},
     position_token::{PositionToken, PositionTokenHostRef},
@@ -8,6 +7,7 @@ use casper_trade_contracts::{
     pair::{Pair, PairHostRef},
     router::{Router, RouterHostRef},
 };
+use liquid_staking_contracts::token::{StakedCSPR, StakedCSPRHostRef};
 use odra::host::HostEnv;
 use odra_cli::{scenario::Error, ContractProvider, DeployedContractsContainer};
 
