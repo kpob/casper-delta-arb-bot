@@ -15,7 +15,9 @@ pub struct LsPriceData {
 impl LsPriceData {
     pub fn new(dex_price: f64, fair_price: f64, wcspr_price: f64) -> Self {
         let diff = (dex_price / fair_price) * 100.0 - 100.0;
+        // $10 / USD_per_CSPR = whole CSPR units needed
         let wcspr_for_ten_usd = (10.0 / wcspr_price) as u64;
+        // sCSPR has a fair redemption rate > 1 CSPR, so divide by fair_price too
         let stcspr_for_ten_usd = (10.0 / wcspr_price / fair_price) as u64;
         Self {
             dex_price,
@@ -44,6 +46,8 @@ impl LsPriceData {
             dex_price = self.dex_price,
             fair_price = self.fair_price,
             diff = format!("{:+.2}%", self.diff),
+            stcspr_for_ten_usd = self.stcspr_for_ten_usd,
+            wcspr_for_ten_usd = self.wcspr_for_ten_usd,
             "LS prices (CSPR)"
         );
     }
