@@ -14,6 +14,36 @@ pub enum LsPath {
     Empty,
 }
 
+impl From<&LsPriceData> for LsPath {
+    fn from(data: &LsPriceData) -> Self {
+        Self::calc(data)
+    }
+}
+
+impl LsPath {
+    fn calc(data: &LsPriceData) -> Self {
+        if data.diff > STAKE_AND_SELL_THRESHOLD {
+            LsPath::StakeAndSell
+        } else if data.diff < -BUY_AND_UNSTAKE_THRESHOLD {
+            LsPath::BuyAndUnstake
+        } else {
+            LsPath::Empty
+        }
+    }
+
+    /// Returns the DEX swap path as a list of token addresses.
+    /// StakeAndSell: sCSPR → WCSPR; BuyAndUnstake: WCSPR → sCSPR.
+    pub fn build(&self, refs: &ContractRefs) -> Result<Vec<Address>, Error> {
+        let wcspr = refs.wcspr()?.address();
+        let stcspr = refs.staked_cspr()?.address();
+        match self {
+            LsPath::StakeAndSell => Ok(vec![stcspr, wcspr]),
+            LsPath::BuyAndUnstake => Ok(vec![wcspr, stcspr]),
+            LsPath::Empty => Ok(vec![]),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,49 +82,14 @@ mod tests {
 
     #[test]
     fn test_empty_at_exact_stake_and_sell_boundary() {
-        // diff = exactly 2.5% — must be strictly greater → Empty
-        let dex = 1.025;
-        let fair = 1.0;
-        let data = price_data(dex, fair);
-        // (1.025/1.0)*100-100 = 2.5 → not strictly > 2.5 → Empty
+        // f64: 1.025/1.0*100-100 ≈ 2.4999… (just below 2.5 due to precision) → Empty
+        let data = price_data(1.025, 1.0);
         assert_eq!(LsPath::from(&data), LsPath::Empty);
     }
 
     #[test]
     fn test_stake_and_sell_just_above_boundary() {
-        let dex = 1.0251;
-        let fair = 1.0;
-        let data = price_data(dex, fair);
+        let data = price_data(1.0251, 1.0);
         assert_eq!(LsPath::from(&data), LsPath::StakeAndSell);
-    }
-}
-
-impl From<&LsPriceData> for LsPath {
-    fn from(data: &LsPriceData) -> Self {
-        Self::calc(data)
-    }
-}
-
-impl LsPath {
-    fn calc(data: &LsPriceData) -> Self {
-        if data.diff > STAKE_AND_SELL_THRESHOLD {
-            LsPath::StakeAndSell
-        } else if data.diff < -BUY_AND_UNSTAKE_THRESHOLD {
-            LsPath::BuyAndUnstake
-        } else {
-            LsPath::Empty
-        }
-    }
-
-    /// Returns the DEX swap path as a list of token addresses.
-    /// StakeAndSell: sCSPR → WCSPR; BuyAndUnstake: WCSPR → sCSPR.
-    pub fn build(&self, refs: &ContractRefs) -> Result<Vec<Address>, Error> {
-        let wcspr = refs.wcspr()?.address();
-        let stcspr = refs.staked_cspr()?.address();
-        match self {
-            LsPath::StakeAndSell => Ok(vec![stcspr, wcspr]),
-            LsPath::BuyAndUnstake => Ok(vec![wcspr, stcspr]),
-            LsPath::Empty => Ok(vec![]),
-        }
     }
 }
