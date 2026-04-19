@@ -39,20 +39,20 @@ Both values come from the `StakedCSPR` contract. This is analogous to Casper Del
 
 Trigger: `dex_price > fair_price` by more than **2.5%**, estimated gain > **1.0 CSPR**.
 
-Steps (3 transactions, estimated cost **18 CSPR**):
-1. Unwrap WCSPR → native CSPR (call `wcspr.withdraw()`)
-2. Call `staked_cspr.stake()` with attached native CSPR → receive sCSPR
-3. Router swap: `[sCSPR, WCSPR]`
+Steps (3 transactions, estimated cost **20 CSPR**):
+1. Unwrap WCSPR → native CSPR (call `wcspr.withdraw()`) only if needed (costs 4 CSPR)
+2. Call `staked_cspr.stake()` with attached native CSPR → receive sCSPR (costs 9 CSPR)
+3. Router swap: `[sCSPR, WCSPR]` (costs 7 CSPR)
 
 #### BuyAndUnstake — sCSPR underpriced on DEX
 
 Trigger: `dex_price < fair_price` by more than **5.0%**, estimated gain > **5.0 CSPR** (higher buffer absorbs ~16h CSPR price risk during unbonding).
 
-Steps (2 txs to enter + 1 to claim, total estimated cost **19 CSPR**):
-1. Router swap: `[WCSPR, sCSPR]`
-2. Call `staked_cspr.unstake(scspr_amount)` → initiate unbonding, receive `unstake_id` + `claimable_from` timestamp
+Steps (2 txs to enter + 1 to claim, total estimated cost **17 CSPR**):
+1. Router swap: `[WCSPR, sCSPR]` (costs 7 CSPR)
+2. Call `staked_cspr.unstake(scspr_amount)` → initiate unbonding, receive `unstake_id` + `claimable_from` timestamp (costs 6 CSPR)
 3. Persist pending claim to `pending_claims.json`
-4. Later (after ~16h): call `staked_cspr.claim()` → receive native CSPR
+4. Later (after ~16h): call `staked_cspr.claim()` → receive native CSPR (costs 4 CSPR)
 
 ## Module Layout
 
@@ -92,8 +92,8 @@ pub struct LsPriceData {
     pub dex_price: f64,          // sCSPR/WCSPR from DEX pair reserves
     pub fair_price: f64,         // staked_cspr() / total_supply()
     pub diff: f64,               // (dex_price / fair_price) * 100 - 100  (%)
-    pub stcspr_for_one_usd: u64,
-    pub wcspr_for_one_usd: u64,
+    pub stcspr_for_ten_usd: u64,
+    pub wcspr_for_ten_usd: u64,
     pub wcspr_price: f64,        // USD price, from same Market oracle as Casper Delta
 }
 ```
@@ -155,17 +155,17 @@ Gain in CSPR:
 gain = (amount_out_cspr - amount_in_cspr) / 1_000_000_000 - tx_cost
 ```
 
-- **StakeAndSell**: `amount_in` = CSPR staked, `amount_out` = WCSPR received from DEX swap. `tx_cost = 18.0`.
-- **BuyAndUnstake**: `amount_in` = WCSPR spent on DEX, `amount_out` = CSPR expected at claim (`sCSPR_bought * fair_price`). `tx_cost = 19.0`.
+- **StakeAndSell**: `amount_in` = CSPR staked, `amount_out` = WCSPR received from DEX swap. `tx_cost = 20.0`.
+- **BuyAndUnstake**: `amount_in` = WCSPR spent on DEX, `amount_out` = CSPR expected at claim (`sCSPR_bought * fair_price`). `tx_cost = 17.0`.
 
-Swap size is calibrated to ~$1 USD worth of the input token (same approach as Casper Delta).
+Swap size is calibrated to ~$10 USD worth of the input token (10x more than Casper Delta).
 
 ## Thresholds Summary
 
 | Path | Dev. Threshold | Min Gain | Tx Cost |
 |------|---------------|----------|---------|
-| StakeAndSell | 2.5% | 1.0 CSPR | 18.0 CSPR |
-| BuyAndUnstake | 5.0% | 5.0 CSPR | 19.0 CSPR |
+| StakeAndSell | 2.5% | 50.0 CSPR | 20.0 CSPR |
+| BuyAndUnstake | 5.0% | 50.0 CSPR | 17.0 CSPR |
 
 ## Dry-Run Mode
 
