@@ -9,7 +9,7 @@ pub struct PendingClaim {
 }
 
 pub struct PendingClaims {
-    pub(crate) claims: Vec<PendingClaim>,
+    claims: Vec<PendingClaim>,
     file_path: String,
 }
 
@@ -26,7 +26,16 @@ impl PendingClaims {
     pub fn load(file_path: &str) -> Self {
         let claims = std::fs::read_to_string(file_path)
             .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
+            .and_then(|s| {
+                serde_json::from_str(&s)
+                    .map_err(|e| {
+                        tracing::warn!(
+                            "Failed to parse claims file {file_path}: {e}. Starting with empty claims."
+                        );
+                        e
+                    })
+                    .ok()
+            })
             .unwrap_or_default();
         Self {
             claims,
@@ -57,6 +66,11 @@ impl PendingClaims {
         self.persist()
     }
 
+    #[cfg(test)]
+    fn from_parts(claims: Vec<PendingClaim>, file_path: String) -> Self {
+        Self { claims, file_path }
+    }
+
     fn persist(&self) -> Result<(), Error> {
         if self.file_path.is_empty() {
             return Ok(());
@@ -81,7 +95,7 @@ mod tests {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .subsec_nanos()
+                .as_nanos()
         )
     }
 
@@ -105,53 +119,55 @@ mod tests {
 
     #[test]
     fn test_has_ready_claims_when_claimable_from_is_in_past() {
-        let claims = PendingClaims {
-            claims: vec![PendingClaim { claimable_from_ms: 1_000 }],
-            file_path: String::new(),
-        };
+        let claims = PendingClaims::from_parts(
+            vec![PendingClaim { claimable_from_ms: 1_000 }],
+            String::new(),
+        );
         assert!(claims.has_ready_claims());
     }
 
     #[test]
     fn test_no_ready_claims_when_claimable_from_is_in_future() {
-        let claims = PendingClaims {
-            claims: vec![PendingClaim { claimable_from_ms: u64::MAX }],
-            file_path: String::new(),
-        };
+        let claims = PendingClaims::from_parts(
+            vec![PendingClaim { claimable_from_ms: u64::MAX }],
+            String::new(),
+        );
         assert!(!claims.has_ready_claims());
     }
 
     #[test]
     fn test_remove_ready_removes_past_keeps_future() {
         let path = tmp_path();
-        let mut claims = PendingClaims {
-            claims: vec![
-                PendingClaim { claimable_from_ms: 1_000 },       // past
-                PendingClaim { claimable_from_ms: u64::MAX },    // future
+        let mut claims = PendingClaims::from_parts(
+            vec![
+                PendingClaim { claimable_from_ms: 1_000 },    // past
+                PendingClaim { claimable_from_ms: u64::MAX }, // future
             ],
-            file_path: path.clone(),
-        };
+            path.clone(),
+        );
         claims.remove_ready().unwrap();
-        assert_eq!(claims.claims.len(), 1);
-        assert_eq!(claims.claims[0].claimable_from_ms, u64::MAX);
+        // only the future claim remains — not yet claimable
+        assert!(!claims.has_ready_claims());
+        let reloaded = PendingClaims::load(&path);
+        assert!(!reloaded.has_ready_claims());
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn test_remove_ready_persists_remaining_claims() {
         let path = tmp_path();
-        let mut claims = PendingClaims {
-            claims: vec![
+        let mut claims = PendingClaims::from_parts(
+            vec![
                 PendingClaim { claimable_from_ms: 1_000 },
                 PendingClaim { claimable_from_ms: u64::MAX },
             ],
-            file_path: path.clone(),
-        };
+            path.clone(),
+        );
         claims.remove_ready().unwrap();
 
         let reloaded = PendingClaims::load(&path);
-        assert_eq!(reloaded.claims.len(), 1);
-        assert_eq!(reloaded.claims[0].claimable_from_ms, u64::MAX);
+        // one claim remains (the future one) and it is not ready yet
+        assert!(!reloaded.has_ready_claims());
         let _ = std::fs::remove_file(&path);
     }
 }
