@@ -4,7 +4,7 @@ pub mod path;
 pub mod utils;
 
 use odra::casper_types::{U256, U512};
-use odra::host::{HostEnv, HostRef};
+use odra::host::{HostEnv, HostRef}; // HostRef required for .with_tokens() on HostRef types
 use odra::prelude::{Address, Addressable};
 use odra_cli::{cspr, scenario::Error};
 use tracing::instrument;
@@ -119,11 +119,7 @@ impl<'a> LsEngine<'a> {
                 // amount_out = WCSPR to receive
                 let cspr_to_stake_motes =
                     (amount_in.as_u64() as f64 * price_data.fair_price) as u64;
-                self.execute_stake_and_sell(
-                    U256::from(cspr_to_stake_motes),
-                    amount_in,
-                    amount_out,
-                )?;
+                self.execute_stake_and_sell(U256::from(cspr_to_stake_motes), amount_out)?;
             }
             LsPath::BuyAndUnstake => {
                 // amount_in = WCSPR to spend, amount_out = sCSPR to receive
@@ -150,14 +146,12 @@ impl<'a> LsEngine<'a> {
 
     /// Unwraps WCSPR → native CSPR, stakes it, then sells the resulting sCSPR on the DEX.
     ///
-    /// * `cspr_to_stake` — native CSPR motes to stake (derived from `stcspr_in * fair_price`)
-    /// * `stcspr_in`     — sCSPR motes to pass as `amount_in_max` to the swap
+    /// * `cspr_to_stake` — native CSPR motes to stake
     /// * `wcspr_out`     — exact WCSPR motes the swap should return
     #[instrument(skip(self))]
     fn execute_stake_and_sell(
         &mut self,
         cspr_to_stake: U256,
-        stcspr_in: U256,
         wcspr_out: U256,
     ) -> Result<(), Error> {
         if self.dry_run {
@@ -235,10 +229,11 @@ impl<'a> LsEngine<'a> {
             u64::MAX,
         );
 
-        // 2. Initiate unstake
-        tracing::info!("Initiating unstake of {:.4} sCSPR", stcspr_out.as_u64() as f64 / 1e9);
+        // 2. Initiate unstake — use actual on-chain balance to avoid slippage mismatch
+        let scspr_balance = self.contracts.staked_cspr()?.balance_of(&me);
+        tracing::info!("Initiating unstake of {:.4} sCSPR", scspr_balance.as_u64() as f64 / 1e9);
         self.env.set_gas(cspr!(6));
-        self.contracts.staked_cspr()?.try_unstake(stcspr_out)?;
+        self.contracts.staked_cspr()?.try_unstake(scspr_balance)?;
 
         // 3. Record pending claim (use claim_time from contract + wall clock)
         let claim_delay_ms = self.contracts.staked_cspr()?.get_claim_time();
