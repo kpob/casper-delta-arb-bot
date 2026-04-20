@@ -6,23 +6,15 @@ use odra_cli::{
     DeployedContractsContainer,
 };
 
-use crate::bot::asset_manager::{DryRunTokenManager, RealBalances, RealTokenManager, TokenManager};
-use crate::bot::{
-    asset_manager::AssetManager, utils::PriceCalculator,
-};
+use crate::bot::casper_delta::CasperDeltaSetup;
 use crate::contracts::ContractRefs;
 
-use self::engine::BotEngine;
 use self::events::{EventSource, KafkaConfig, KafkaEventSource};
 use self::liquid_staking::LsEngine;
 
-mod asset_manager;
-mod data;
-mod engine;
 mod events;
 mod liquid_staking;
-mod path;
-mod utils;
+mod casper_delta;
 
 pub struct Bot;
 
@@ -47,35 +39,22 @@ impl Scenario for Bot {
         args: Args,
     ) -> Result<(), Error> {
         let contracts = ContractRefs::new(env, container);
-        let calc = PriceCalculator::new(&contracts);
         let caller = env.caller();
-
         let dry_run = args.get_single("dry-run").unwrap_or(false);
-        let token_manager = self.build_token_manager(dry_run, env, &contracts);
-        let balances = RealBalances::new(env, &contracts);
-        let asset_manager = AssetManager::new(&balances, &*token_manager);
-        token_manager.approve_markets()?;
-        asset_manager.print_balances()?;
 
-        let engine = BotEngine::new(calc, asset_manager, &contracts, caller);
+        let setup = CasperDeltaSetup::new(env, &contracts, dry_run)?;
+        let cd_engine = setup.build_engine(&contracts, caller)?;
         let mut ls_engine = LsEngine::new(&contracts, env, caller, dry_run);
         ls_engine.approve_stcspr()?;
 
-        let config = KafkaConfig::from_env();
-        tracing::info!("Connecting to Kafka at {}", config.bootstrap_servers);
-        let relevant_addresses = vec![
-            contracts.long()?.address().to_string(),
-            contracts.short()?.address().to_string(),
-            contracts.staked_cspr()?.address().to_string(),
-        ];
-        let mut event_source = KafkaEventSource::new(config, relevant_addresses);
+        let mut event_source = self.setup_event_source(&contracts);
 
         while let Some(event) = event_source.next_event() {
             tracing::info!("Event: {:?}", event);
             if let Err(e) = ls_engine.try_claim_ready() {
                 tracing::error!("LS claim error: {:?}", e);
             }
-            match engine.handle_event(&event) {
+            match cd_engine.handle_event(&event) {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(e) => tracing::error!("Delta engine error: {:?}", e),
@@ -91,17 +70,14 @@ impl Scenario for Bot {
 }
 
 impl Bot {
-    fn build_token_manager<'a>(
-        &self,
-        dry_run: bool,
-        env: &'a HostEnv,
-        contracts: &'a ContractRefs<'a>,
-    ) -> Box<dyn TokenManager + 'a> {
-        if dry_run {
-            tracing::info!("Dry run mode enabled");
-            Box::new(DryRunTokenManager)
-        } else {
-            Box::new(RealTokenManager::new(env, contracts))
-        }
+    fn setup_event_source(&self, contracts: &ContractRefs) -> impl EventSource {
+        let config = KafkaConfig::from_env();
+        tracing::info!("Connecting to Kafka at {}", config.bootstrap_servers);
+        let relevant_addresses = vec![
+            contracts.long().unwrap().address().to_string(),
+            contracts.short().unwrap().address().to_string(),
+            contracts.staked_cspr().unwrap().address().to_string(),
+        ];
+        KafkaEventSource::new(config, relevant_addresses)
     }
 }

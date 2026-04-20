@@ -1,8 +1,6 @@
 use std::fmt::Display;
-
 use odra::casper_types::U256;
-
-use crate::bot::path::Path;
+use super::path::Path;
 
 const DECIMAL_PLACES: u32 = 9;
 

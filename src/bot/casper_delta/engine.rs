@@ -3,22 +3,24 @@ use odra::prelude::Address;
 use odra_cli::scenario::Error;
 use tracing::instrument;
 
-use crate::bot::asset_manager::AssetManager;
-use crate::bot::data::PriceData;
+use super::{
+    asset_manager::AssetManager,
+    data::PriceData,
+    path::Path,
+    utils::PriceCalculator
+};
 use crate::bot::events::BotEvent;
-use crate::bot::path::Path;
-use crate::bot::utils::PriceCalculator;
 use crate::contracts::ContractRefs;
 
 /// The core bot logic, decoupled from the event loop.
-pub struct BotEngine<'a> {
+pub struct CasperDeltaEngine<'a> {
     calc: PriceCalculator<'a>,
     asset_manager: AssetManager<'a>,
     contracts: &'a ContractRefs<'a>,
     caller: Address,
 }
 
-impl<'a> BotEngine<'a> {
+impl<'a> CasperDeltaEngine<'a> {
     pub fn new(
         calc: PriceCalculator<'a>,
         asset_manager: AssetManager<'a>,

@@ -1,21 +1,22 @@
 use odra::{casper_types::U256, prelude::Addressable};
 use odra_cli::scenario::Error;
 
+use super::path::Path;
 use crate::{
-    bot::{data::PriceData, path::Path},
+    bot::casper_delta::data::PriceData,
     contracts::ContractRefs,
 };
 
-pub(super) struct PriceCalculator<'a> {
+pub struct PriceCalculator<'a> {
     contracts: &'a ContractRefs<'a>,
 }
 
 impl<'a> PriceCalculator<'a> {
-    pub(super) fn new(contracts: &'a ContractRefs<'a>) -> Self {
+    pub fn new(contracts: &'a ContractRefs<'a>) -> Self {
         Self { contracts }
     }
 
-    pub(super) fn casper_trade_prices(&self) -> Result<(f64, f64), Error> {
+    pub fn casper_trade_prices(&self) -> Result<(f64, f64), Error> {
         let (reserves_long, reserves_wcspr_long, _) =
             self.contracts.long_wcspr_pair()?.get_reserves();
         let (reserves_wcspr_short, reserves_short, _) =
@@ -27,7 +28,7 @@ impl<'a> PriceCalculator<'a> {
         Ok((long_token_price, short_token_price))
     }
 
-    pub(super) fn fair_prices(&self) -> Result<(f64, f64, f64), Error> {
+    pub fn fair_prices(&self) -> Result<(f64, f64, f64), Error> {
         let market = self.contracts.market()?;
         let state = market
             .try_get_address_market_state(market.address())?
@@ -44,7 +45,7 @@ impl<'a> PriceCalculator<'a> {
         (amount0 * U256::from(1_000_000) / amount1).as_u64() as f64 / 1000_000.0f64
     }
 
-    pub(super) fn calc_gains_in_cspr(
+    pub fn calc_gains_in_cspr(
         amount_in: U256,
         amount_out: U256,
         price_data: &PriceData,

@@ -1,7 +1,7 @@
 use odra::prelude::{Address, Addressable};
 use odra_cli::scenario::Error;
 
-use crate::{bot::data::PriceData, contracts::ContractRefs};
+use crate::{bot::casper_delta::data::PriceData, contracts::ContractRefs};
 
 const DIFF_THRESHOLD: f64 = 2.5f64;
 
@@ -76,7 +76,7 @@ impl Path {
 
 #[cfg(test)]
 mod tests {
-    use crate::bot::data::PriceData;
+    use crate::bot::casper_delta::data::PriceData;
 
     use super::*;
 

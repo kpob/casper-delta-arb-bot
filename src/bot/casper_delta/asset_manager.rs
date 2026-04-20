@@ -6,10 +6,8 @@ use odra::{
 };
 use odra_cli::{cspr, scenario::Error};
 
-use crate::{
-    bot::{data::PriceData, path::Path},
-    contracts::ContractRefs,
-};
+use super::{data::PriceData, path::Path};
+use crate::contracts::ContractRefs;
 
 const TOP_UP_AMOUNT: u64 = 2_000_000_000_000; // 2_000 cspr
 const MIN_CSPR_BALANCE: u64 = 100_000_000_000; // 100 CSPR
