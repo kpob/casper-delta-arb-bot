@@ -46,6 +46,9 @@ impl<'a> LsEngine<'a> {
     /// Approves the Router to spend sCSPR on behalf of the caller.
     /// Must be called once at startup before any StakeAndSell swap.
     pub fn approve_stcspr(&self) -> Result<(), Error> {
+        if self.dry_run {
+            return Ok(());
+        }
         let me = self.caller;
         let router_addr = self.contracts.router()?.address();
         if self.contracts.staked_cspr()?.allowance(&me, &router_addr).is_zero() {

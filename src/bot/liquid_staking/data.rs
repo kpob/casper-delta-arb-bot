@@ -46,6 +46,7 @@ impl LsPriceData {
             dex_price = self.dex_price,
             fair_price = self.fair_price,
             diff = format!("{:+.2}%", self.diff),
+            wcspr_price_usd = self.wcspr_price,
             stcspr_for_ten_usd = self.stcspr_for_ten_usd,
             wcspr_for_ten_usd = self.wcspr_for_ten_usd,
             "LS prices (CSPR)"
