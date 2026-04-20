@@ -1,7 +1,10 @@
 use odra::casper_types::{U256, U512};
-use odra::prelude::Addressable;
+use odra::prelude::Addressable; // required to call .address() on HostRef types
 use odra::uints::ToU512;
 use odra_cli::scenario::Error;
+
+const STAKE_AND_SELL_TX_COST_CSPR: f64 = 20.0; // unwrap + stake + swap
+const BUY_AND_UNSTAKE_TX_COST_CSPR: f64 = 17.0; // swap + unstake + (later) claim
 
 use super::data::LsPriceData;
 use super::path::LsPath;
@@ -56,12 +59,12 @@ impl<'a> LsPriceCalculator<'a> {
             LsPath::StakeAndSell => (
                 amount_in.as_u64() as f64 * price_data.fair_price,
                 amount_out.as_u64() as f64,
-                20.0f64,
+                STAKE_AND_SELL_TX_COST_CSPR,
             ),
             LsPath::BuyAndUnstake => (
                 amount_in.as_u64() as f64,
                 amount_out.as_u64() as f64 * price_data.fair_price,
-                17.0f64,
+                BUY_AND_UNSTAKE_TX_COST_CSPR,
             ),
             LsPath::Empty => return 0.0,
         };
