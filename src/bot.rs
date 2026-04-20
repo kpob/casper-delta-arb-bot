@@ -14,6 +14,7 @@ use crate::contracts::ContractRefs;
 
 use self::engine::BotEngine;
 use self::events::{EventSource, KafkaConfig, KafkaEventSource};
+use self::liquid_staking::LsEngine;
 
 mod asset_manager;
 mod data;
@@ -57,25 +58,32 @@ impl Scenario for Bot {
         asset_manager.print_balances()?;
 
         let engine = BotEngine::new(calc, asset_manager, &contracts, caller);
+        let mut ls_engine = LsEngine::new(&contracts, env, caller, dry_run);
+        ls_engine.approve_stcspr()?;
+
         let config = KafkaConfig::from_env();
-        tracing::info!(
-            "Connecting to Kafka at {}",
-            config.bootstrap_servers,
-        );
+        tracing::info!("Connecting to Kafka at {}", config.bootstrap_servers);
         let relevant_addresses = vec![
             contracts.long()?.address().to_string(),
             contracts.short()?.address().to_string(),
+            contracts.staked_cspr()?.address().to_string(),
         ];
         let mut event_source = KafkaEventSource::new(config, relevant_addresses);
 
         while let Some(event) = event_source.next_event() {
             tracing::info!("Event: {:?}", event);
+            if let Err(e) = ls_engine.try_claim_ready() {
+                tracing::error!("LS claim error: {:?}", e);
+            }
             match engine.handle_event(&event) {
-                Ok(true) => continue,
+                Ok(true) => {}
                 Ok(false) => break,
-                Err(e) => {
-                    tracing::error!("Error handling event: {:?}", e);
-                }
+                Err(e) => tracing::error!("Delta engine error: {:?}", e),
+            }
+            match ls_engine.handle_event(&event) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(e) => tracing::error!("LS engine error: {:?}", e),
             }
         }
         Ok(())
