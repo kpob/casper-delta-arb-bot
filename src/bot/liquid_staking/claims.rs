@@ -1,6 +1,6 @@
+use odra_cli::scenario::Error;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
-use odra_cli::scenario::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingClaim {
@@ -109,7 +109,11 @@ mod tests {
     fn test_add_persists_to_file_and_reloads() {
         let path = tmp_path();
         let mut claims = PendingClaims::load(&path);
-        claims.add(PendingClaim { claimable_from_ms: 9_999_999_999_999 }).unwrap();
+        claims
+            .add(PendingClaim {
+                claimable_from_ms: 9_999_999_999_999,
+            })
+            .unwrap();
 
         let reloaded = PendingClaims::load(&path);
         assert_eq!(reloaded.claims.len(), 1);
@@ -120,7 +124,9 @@ mod tests {
     #[test]
     fn test_has_ready_claims_when_claimable_from_is_in_past() {
         let claims = PendingClaims::from_parts(
-            vec![PendingClaim { claimable_from_ms: 1_000 }],
+            vec![PendingClaim {
+                claimable_from_ms: 1_000,
+            }],
             String::new(),
         );
         assert!(claims.has_ready_claims());
@@ -129,7 +135,9 @@ mod tests {
     #[test]
     fn test_no_ready_claims_when_claimable_from_is_in_future() {
         let claims = PendingClaims::from_parts(
-            vec![PendingClaim { claimable_from_ms: u64::MAX }],
+            vec![PendingClaim {
+                claimable_from_ms: u64::MAX,
+            }],
             String::new(),
         );
         assert!(!claims.has_ready_claims());
@@ -140,8 +148,12 @@ mod tests {
         let path = tmp_path();
         let mut claims = PendingClaims::from_parts(
             vec![
-                PendingClaim { claimable_from_ms: 1_000 },    // past
-                PendingClaim { claimable_from_ms: u64::MAX }, // future
+                PendingClaim {
+                    claimable_from_ms: 1_000,
+                }, // past
+                PendingClaim {
+                    claimable_from_ms: u64::MAX,
+                }, // future
             ],
             path.clone(),
         );
@@ -158,8 +170,12 @@ mod tests {
         let path = tmp_path();
         let mut claims = PendingClaims::from_parts(
             vec![
-                PendingClaim { claimable_from_ms: 1_000 },
-                PendingClaim { claimable_from_ms: u64::MAX },
+                PendingClaim {
+                    claimable_from_ms: 1_000,
+                },
+                PendingClaim {
+                    claimable_from_ms: u64::MAX,
+                },
             ],
             path.clone(),
         );

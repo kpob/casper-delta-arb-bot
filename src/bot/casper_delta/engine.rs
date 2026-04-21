@@ -3,34 +3,25 @@ use odra::prelude::Address;
 use odra_cli::scenario::Error;
 use tracing::instrument;
 
-use super::{
-    asset_manager::AssetManager,
-    data::PriceData,
-    path::Path,
-    utils::PriceCalculator
-};
+use super::{data::PriceData, path::Path, trader::DeltaAssetManager, utils::PriceCalculator};
 use crate::bot::events::BotEvent;
-use crate::contracts::ContractRefs;
 
 /// The core bot logic, decoupled from the event loop.
 pub struct CasperDeltaEngine<'a> {
     calc: PriceCalculator<'a>,
-    asset_manager: AssetManager<'a>,
-    contracts: &'a ContractRefs<'a>,
+    asset_manager: DeltaAssetManager<'a>,
     caller: Address,
 }
 
 impl<'a> CasperDeltaEngine<'a> {
     pub fn new(
         calc: PriceCalculator<'a>,
-        asset_manager: AssetManager<'a>,
-        contracts: &'a ContractRefs<'a>,
+        asset_manager: DeltaAssetManager<'a>,
         caller: Address,
     ) -> Self {
         Self {
             calc,
             asset_manager,
-            contracts,
             caller,
         }
     }
@@ -39,7 +30,7 @@ impl<'a> CasperDeltaEngine<'a> {
     #[instrument(skip(self))]
     pub fn handle_event(&self, event: &BotEvent) -> Result<bool, Error> {
         match event {
-            BotEvent::TimerTick | BotEvent::TradeExecuted| BotEvent::PriceChanged=> {
+            BotEvent::TimerTick | BotEvent::TradeExecuted | BotEvent::PriceChanged => {
                 self.check_and_trade()?;
                 Ok(true)
             }
@@ -56,33 +47,28 @@ impl<'a> CasperDeltaEngine<'a> {
         price_data.log();
 
         self.asset_manager
-            .manage_asset_levels(&price_data, self.caller)?;
+            .manage_asset_levels(price_data, self.caller)?;
 
-        let path = Path::from(&price_data);
+        let path = Path::from(price_data);
         tracing::info!("Swap path: {:?}", path);
         if path == Path::Empty {
             tracing::info!("No arbitrage path found");
             return Ok(());
         }
 
-        let amounts = self.get_swap_amounts(&price_data, path);
+        let amounts = self.calc.effective_price(price_data, path);
         if let Ok([amount_in, .., amount_out]) = amounts.as_deref() {
-            let gain =
-                PriceCalculator::calc_gains_in_cspr(*amount_in, *amount_out, &price_data, path);
-            tracing::info!("Gain: {:<10.4} CSPR", gain);
-            if gain < 1.0f64 {
-                tracing::info!("Gain below threshold, skipping swap");
+            let predicted_profit =
+                PriceCalculator::cspr_profit(*amount_in, *amount_out, price_data, path);
+            tracing::info!("Predicted profit: {:<10.4} CSPR", predicted_profit);
+            if predicted_profit < 1.0f64 {
+                tracing::info!("Predicted profit below threshold, skipping swap");
                 return Ok(());
             }
 
-            let (actual_amount_in, actual_amount_out) =
-                self.swap(path, *amount_in, *amount_out)?;
-            let actual_gain = PriceCalculator::calc_gains_in_cspr(
-                actual_amount_in,
-                actual_amount_out,
-                &price_data,
-                path,
-            );
+            let (actual_amount_in, actual_amount_out) = self.swap(path, *amount_in, *amount_out)?;
+            let actual_gain =
+                PriceCalculator::cspr_profit(actual_amount_in, actual_amount_out, price_data, path);
             tracing::info!("Actual gain: {:<10.4} CSPR", actual_gain);
         } else {
             tracing::info!("No valid swap amounts found");
@@ -91,14 +77,15 @@ impl<'a> CasperDeltaEngine<'a> {
     }
 
     fn get_price_data(&self) -> Result<PriceData, Error> {
-        let (long_price, short_price) = self.calc.casper_trade_prices()?;
-        let (long_fair_price, short_fair_price, wcspr_price) = self.calc.fair_prices()?;
+        let (long_dex_rate, short_dex_rate) = self.calc.casper_trade_rates()?;
+        let (long_protocol_price, short_protocol_price, wcspr_price) =
+            self.calc.protocol_prices()?;
         Ok(PriceData::new(
-            long_price,
-            short_price,
+            long_dex_rate,
+            short_dex_rate,
             wcspr_price,
-            long_fair_price,
-            short_fair_price,
+            long_protocol_price,
+            short_protocol_price,
         ))
     }
 
@@ -119,30 +106,4 @@ impl<'a> CasperDeltaEngine<'a> {
             })
         }
     }
-
-    fn get_swap_amounts(
-        &self,
-        price_data: &PriceData,
-        path: Path,
-    ) -> Result<Vec<U256>, Error> {
-        let amount_in = price_data.amount_per_one_usd(path);
-        let path = path.build(self.contracts)?;
-        let amounts = self.contracts
-            .router()?
-            .try_get_amounts_out(amount_in, path)
-            .map_err(|e| Error::OdraError {
-                message: format!("Failed to get amounts out: {:?}", e),
-            })?;
-        if let [amount_in, .., amount_out] = amounts.as_slice() {
-            Ok(vec![*amount_in, *amount_out])
-        } else {
-            Err(Error::OdraError {
-                message: "Invalid swap result".to_string(),
-            })
-        }
-    }
-
 }
-
-
-

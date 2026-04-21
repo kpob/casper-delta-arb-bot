@@ -11,6 +11,8 @@ use liquid_staking_contracts::token::{StakedCSPR, StakedCSPRHostRef};
 use odra::host::HostEnv;
 use odra_cli::{scenario::Error, ContractProvider, DeployedContractsContainer};
 
+use crate::{LP_LONG_WCSPR_ID, LP_WCSPR_SHORT_ID, LP_WCSPR_STCSPR_ID};
+
 pub struct ContractRefs<'a> {
     env: &'a HostEnv,
     container: &'a DeployedContractsContainer,
@@ -28,13 +30,19 @@ impl<'a> ContractRefs<'a> {
     pub fn long_wcspr_pair(&self) -> Result<PairHostRef, Error> {
         Ok(self
             .container
-            .contract_ref_named::<Pair>(self.env, Some("CD_LONG-WCSPR LP".to_string()))?)
+            .contract_ref_named::<Pair>(self.env, Some(LP_LONG_WCSPR_ID.to_string()))?)
     }
 
     pub fn wcspr_short_pair(&self) -> Result<PairHostRef, Error> {
         Ok(self
             .container
-            .contract_ref_named::<Pair>(self.env, Some("WCSPR-CD_SHORT LP".to_string()))?)
+            .contract_ref_named::<Pair>(self.env, Some(LP_WCSPR_SHORT_ID.to_string()))?)
+    }
+
+    pub fn wcspr_stcspr_pair(&self) -> Result<PairHostRef, Error> {
+        Ok(self
+            .container
+            .contract_ref_named::<Pair>(self.env, Some(LP_WCSPR_STCSPR_ID.to_string()))?)
     }
 
     pub fn market(&self) -> Result<MarketHostRef, Error> {
@@ -61,11 +69,5 @@ impl<'a> ContractRefs<'a> {
 
     pub fn staked_cspr(&self) -> Result<StakedCSPRHostRef, Error> {
         Ok(self.container.contract_ref::<StakedCSPR>(self.env)?)
-    }
-
-    pub fn wcspr_stcspr_pair(&self) -> Result<PairHostRef, Error> {
-        Ok(self
-            .container
-            .contract_ref_named::<Pair>(self.env, Some("WCSPR-StCSPR LP".to_string()))?)
     }
 }

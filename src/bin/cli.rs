@@ -1,5 +1,6 @@
 use casper_delta_bot::{
     Bot, UnwrapWcspr, CD_LONG_ID, CD_SHORT_ID, LP_LONG_WCSPR_ID, LP_WCSPR_SHORT_ID,
+    LP_WCSPR_STCSPR_ID,
 };
 use casper_delta_contracts::{
     market::Market, position_token::PositionToken, wrapped_native::WrappedNativeToken,
@@ -9,6 +10,7 @@ use casper_trade_contracts::{
     pair::{Pair, PairFactory},
     router::Router,
 };
+use liquid_staking_contracts::token::StakedCSPR;
 use odra_cli::OdraCli;
 use styks_contracts::styks_price_feed::StyksPriceFeed;
 
@@ -32,8 +34,10 @@ pub fn main() {
         .contract::<Router>()
         .contract::<Factory>()
         .contract::<PairFactory>()
+        .contract::<StakedCSPR>()
         .named_contract::<Pair>(LP_LONG_WCSPR_ID.to_string())
         .named_contract::<Pair>(LP_WCSPR_SHORT_ID.to_string())
+        .named_contract::<Pair>(LP_WCSPR_STCSPR_ID.to_string())
         .scenario(Bot)
         .scenario(UnwrapWcspr)
         .build()

@@ -53,7 +53,7 @@ package_hash = "hash-814fedbd4ae53b82ab19b1ff6698ce412445c3266271fcb639986d37dc0
 [[contracts]]
 name = "StakedCSPR"
 package_name = "StakedCSPR"
-package_hash = "hash-d08ca0c6b4d567a671b5a26f51fb78333ffce403544d19a09a93ebb7c04a6a53"
+package_hash = "hash-a4f6d5e6ce046b7e8e32356b1395b69573ba2481fc86b85f9183f149366b60f1"
 
 [[contracts]]
 name = "Pair"

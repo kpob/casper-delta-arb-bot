@@ -136,7 +136,11 @@ impl KafkaEventSource {
         Self { rx }
     }
 
-    fn spawn_consumer(config: &KafkaConfig, relevant_addresses: Vec<String>, tx: mpsc::Sender<BotEvent>) {
+    fn spawn_consumer(
+        config: &KafkaConfig,
+        relevant_addresses: Vec<String>,
+        tx: mpsc::Sender<BotEvent>,
+    ) {
         let topics = vec![
             config.topic_price_changed.clone(),
             config.topic_trade_executed.clone(),
@@ -170,11 +174,19 @@ impl KafkaEventSource {
                     Some(Ok(msg)) => {
                         let topic = msg.topic();
                         let payload = msg.payload().unwrap_or_default();
-                        tracing::debug!("Kafka message received on topic '{}': {} bytes", topic, payload.len());
+                        tracing::debug!(
+                            "Kafka message received on topic '{}': {} bytes",
+                            topic,
+                            payload.len()
+                        );
 
-                        if let Some(event) =
-                            Self::message_to_event(topic, payload, &topic_price_changed, &topic_trade_executed, &relevant_addresses)
-                        {
+                        if let Some(event) = Self::message_to_event(
+                            topic,
+                            payload,
+                            &topic_price_changed,
+                            &topic_trade_executed,
+                            &relevant_addresses,
+                        ) {
                             tracing::info!("Kafka event received: {:?}", event);
                             if tx.send(event).is_err() {
                                 break;
@@ -215,7 +227,9 @@ impl KafkaEventSource {
                     if Self::is_relevant_trade(&event.app_data, relevant_addresses) {
                         Some(BotEvent::TradeExecuted)
                     } else {
-                        tracing::debug!("Trade event ignored: path does not involve Long/Short tokens");
+                        tracing::debug!(
+                            "Trade event ignored: path does not involve Long/Short tokens"
+                        );
                         None
                     }
                 }

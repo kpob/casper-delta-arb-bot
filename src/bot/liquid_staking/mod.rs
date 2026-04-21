@@ -12,12 +12,12 @@ use tracing::instrument;
 use crate::bot::events::BotEvent;
 use crate::contracts::ContractRefs;
 use claims::{PendingClaim, PendingClaims};
-use data::LsPriceData;
-use path::LsPath;
+use data::PriceData;
+use path::Path;
 use utils::LsPriceCalculator;
 
 const CLAIMS_FILE: &str = "pending_claims.json";
-const MIN_GAIN_CSPR: f64 = 50.0;
+const MIN_PROFIT_CSPR: f64 = 50.0;
 
 pub struct LsEngine<'a> {
     contracts: &'a ContractRefs<'a>,
@@ -51,9 +51,16 @@ impl<'a> LsEngine<'a> {
         }
         let me = self.caller;
         let router_addr = self.contracts.router()?.address();
-        if self.contracts.staked_cspr()?.allowance(&me, &router_addr).is_zero() {
+        if self
+            .contracts
+            .staked_cspr()?
+            .allowance(&me, &router_addr)
+            .is_zero()
+        {
             self.env.set_gas(cspr!(4));
-            self.contracts.staked_cspr()?.approve(&router_addr, &U256::MAX);
+            self.contracts
+                .staked_cspr()?
+                .approve(&router_addr, &U256::MAX);
         }
         Ok(())
     }
@@ -89,17 +96,17 @@ impl<'a> LsEngine<'a> {
     }
 
     fn check_and_trade(&mut self) -> Result<(), Error> {
-        let price_data = LsPriceCalculator::new(self.contracts).prices()?;
+        let price_data = LsPriceCalculator::prices(self.contracts)?;
         price_data.log();
 
-        let path = LsPath::from(&price_data);
+        let path = Path::from(price_data);
         tracing::info!("LS swap path: {:?}", path);
-        if path == LsPath::Empty {
+        if path == Path::Empty {
             tracing::info!("No LS arbitrage opportunity");
             return Ok(());
         }
 
-        let amounts = self.get_swap_amounts(&price_data, path)?;
+        let amounts = self.get_swap_amounts(price_data, path)?;
         let (amount_in, amount_out) = match amounts.as_slice() {
             [a_in, .., a_out] => (*a_in, *a_out),
             _ => {
@@ -108,34 +115,34 @@ impl<'a> LsEngine<'a> {
             }
         };
 
-        let gain = LsPriceCalculator::calc_gains_in_cspr(amount_in, amount_out, &price_data, path);
-        tracing::info!("LS gain estimate: {:.4} CSPR", gain);
+        let profit = LsPriceCalculator::cspr_profit(amount_in, amount_out, price_data, path);
+        tracing::info!("LS profit estimate: {:.4} CSPR", profit);
 
-        if gain < MIN_GAIN_CSPR {
-            tracing::info!("LS gain below threshold ({MIN_GAIN_CSPR} CSPR), skipping");
+        if profit < MIN_PROFIT_CSPR {
+            tracing::info!("LS profit below threshold ({MIN_PROFIT_CSPR} CSPR), skipping");
             return Ok(());
         }
 
         match path {
-            LsPath::StakeAndSell => {
+            Path::StCsprCspr => {
                 // amount_in = sCSPR to sell (estimated from staking)
                 // amount_out = WCSPR to receive
                 let cspr_to_stake_motes =
-                    (amount_in.as_u64() as f64 * price_data.fair_price) as u64;
+                    (amount_in.as_u64() as f64 * price_data.protocol_price) as u64;
                 self.execute_stake_and_sell(U256::from(cspr_to_stake_motes), amount_out)?;
             }
-            LsPath::BuyAndUnstake => {
+            Path::CsprStCspr => {
                 // amount_in = WCSPR to spend, amount_out = sCSPR to receive
                 self.execute_buy_and_unstake(amount_in, amount_out)?;
             }
-            LsPath::Empty => unreachable!(),
+            Path::Empty => unreachable!(),
         }
 
         Ok(())
     }
 
-    fn get_swap_amounts(&self, price_data: &LsPriceData, path: LsPath) -> Result<Vec<U256>, Error> {
-        let amount_in = price_data.amount_per_ten_usd(path);
+    fn get_swap_amounts(&self, price_data: PriceData, path: Path) -> Result<Vec<U256>, Error> {
+        let amount_in = price_data.amount_per_trade_unit(path);
         let dex_path = path.build(self.contracts)?;
         let amounts = self
             .contracts
@@ -165,7 +172,10 @@ impl<'a> LsEngine<'a> {
         let me = self.caller;
 
         // 1. Unwrap WCSPR → native CSPR
-        tracing::info!("Unwrapping {:.4} WCSPR", cspr_to_stake.as_u64() as f64 / 1e9);
+        tracing::info!(
+            "Unwrapping {:.4} WCSPR",
+            cspr_to_stake.as_u64() as f64 / 1e9
+        );
         self.env.set_gas(cspr!(4));
         self.contracts.wcspr()?.try_withdraw(&cspr_to_stake)?;
 
@@ -180,7 +190,7 @@ impl<'a> LsEngine<'a> {
 
         // 3. Sell sCSPR → WCSPR via Router (use actual balance as amount_in_max)
         let scspr_balance = self.contracts.staked_cspr()?.balance_of(&me);
-        let dex_path = LsPath::StakeAndSell.build(self.contracts)?;
+        let dex_path = Path::StCsprCspr.build(self.contracts)?;
         tracing::info!(
             "Swapping {:.4} sCSPR for {:.4} WCSPR",
             scspr_balance.as_u64() as f64 / 1e9,
@@ -204,11 +214,7 @@ impl<'a> LsEngine<'a> {
     /// * `wcspr_in`   — WCSPR motes to spend (amount_in_max)
     /// * `stcspr_out` — exact sCSPR motes to buy
     #[instrument(skip(self))]
-    fn execute_buy_and_unstake(
-        &mut self,
-        wcspr_in: U256,
-        stcspr_out: U256,
-    ) -> Result<(), Error> {
+    fn execute_buy_and_unstake(&mut self, wcspr_in: U256, stcspr_out: U256) -> Result<(), Error> {
         if self.dry_run {
             tracing::info!("Dry run — buy_and_unstake skipped");
             return Ok(());
@@ -217,7 +223,7 @@ impl<'a> LsEngine<'a> {
         let me = self.caller;
 
         // 1. Buy sCSPR on DEX
-        let dex_path = LsPath::BuyAndUnstake.build(self.contracts)?;
+        let dex_path = Path::CsprStCspr.build(self.contracts)?;
         tracing::info!(
             "Buying {:.4} sCSPR with {:.4} WCSPR",
             stcspr_out.as_u64() as f64 / 1e9,
@@ -234,7 +240,10 @@ impl<'a> LsEngine<'a> {
 
         // 2. Initiate unstake — use actual on-chain balance to avoid slippage mismatch
         let scspr_balance = self.contracts.staked_cspr()?.balance_of(&me);
-        tracing::info!("Initiating unstake of {:.4} sCSPR", scspr_balance.as_u64() as f64 / 1e9);
+        tracing::info!(
+            "Initiating unstake of {:.4} sCSPR",
+            scspr_balance.as_u64() as f64 / 1e9
+        );
         self.env.set_gas(cspr!(6));
         self.contracts.staked_cspr()?.try_unstake(scspr_balance)?;
 
@@ -246,7 +255,10 @@ impl<'a> LsEngine<'a> {
             .as_millis() as u64
             + claim_delay_ms;
 
-        tracing::info!("Recording pending claim (claimable in ~{} ms)", claim_delay_ms);
+        tracing::info!(
+            "Recording pending claim (claimable in ~{} ms)",
+            claim_delay_ms
+        );
         self.claims.add(PendingClaim { claimable_from_ms })?;
 
         tracing::info!("BuyAndUnstake complete — claim recorded");

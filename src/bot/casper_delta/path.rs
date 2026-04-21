@@ -16,18 +16,18 @@ pub enum Path {
     Empty,
 }
 
-impl From<&PriceData> for Path {
-    fn from(data: &PriceData) -> Self {
+impl From<PriceData> for Path {
+    fn from(data: PriceData) -> Self {
         Self::calc(data)
     }
 }
 
 impl Path {
-    fn calc(data: &PriceData) -> Self {
-        let long_diff = data.long_diff.abs();
-        let short_diff = data.short_diff.abs();
-        let long_price_diff = data.long_price - data.long_fair_price;
-        let short_price_diff = data.short_price - data.short_fair_price;
+    fn calc(data: PriceData) -> Self {
+        let long_diff = data.long_diff_percent.abs();
+        let short_diff = data.short_diff_percent.abs();
+        let long_price_diff = data.long_dex_rate - data.long_protocol_price;
+        let short_price_diff = data.short_dex_rate - data.short_protocol_price;
 
         if long_price_diff > 0.0f64
             && short_price_diff < 0.0f64
@@ -96,7 +96,7 @@ mod tests {
             long_fair_price,
             short_fair_price,
         );
-        assert_eq!(Path::calc(&data), Path::LongWcsprShort);
+        assert_eq!(Path::calc(data), Path::LongWcsprShort);
     }
 
     #[test]
@@ -115,7 +115,7 @@ mod tests {
             long_fair_price,
             short_fair_price,
         );
-        assert_eq!(Path::calc(&data), Path::ShortWcsprLong);
+        assert_eq!(Path::calc(data), Path::ShortWcsprLong);
     }
 
     #[test]
@@ -133,7 +133,7 @@ mod tests {
             long_fair_price,
             short_fair_price,
         );
-        assert_eq!(Path::calc(&data), Path::LongWcspr);
+        assert_eq!(Path::calc(data), Path::LongWcspr);
     }
 
     #[test]
@@ -151,7 +151,7 @@ mod tests {
             long_fair_price,
             short_fair_price,
         );
-        assert_eq!(Path::calc(&data), Path::ShortWcspr);
+        assert_eq!(Path::calc(data), Path::ShortWcspr);
     }
 
     #[test]
@@ -169,7 +169,7 @@ mod tests {
             long_fair_price,
             short_fair_price,
         );
-        assert_eq!(Path::calc(&data), Path::WcsprLong);
+        assert_eq!(Path::calc(data), Path::WcsprLong);
     }
 
     #[test]
@@ -187,7 +187,7 @@ mod tests {
             long_fair_price,
             short_fair_price,
         );
-        assert_eq!(Path::calc(&data), Path::WcsprShort);
+        assert_eq!(Path::calc(data), Path::WcsprShort);
     }
 
     #[test]
@@ -205,7 +205,7 @@ mod tests {
             long_fair_price,
             short_fair_price,
         );
-        assert_eq!(Path::calc(&data), Path::Empty);
+        assert_eq!(Path::calc(data), Path::Empty);
     }
 
     #[test]
@@ -225,7 +225,7 @@ mod tests {
             long_fair_price,
             short_fair_price,
         );
-        assert_eq!(Path::calc(&data), Path::LongWcspr);
+        assert_eq!(Path::calc(data), Path::LongWcspr);
     }
 
     #[test]
@@ -245,7 +245,7 @@ mod tests {
             long_fair_price,
             short_fair_price,
         );
-        assert_eq!(Path::calc(&data), Path::WcsprLong);
+        assert_eq!(Path::calc(data), Path::WcsprLong);
     }
 
     #[test]
@@ -264,7 +264,7 @@ mod tests {
             long_fair_price,
             short_fair_price,
         );
-        assert_eq!(Path::calc(&data), Path::LongWcsprShort);
+        assert_eq!(Path::calc(data), Path::LongWcsprShort);
     }
 
     #[test]
@@ -283,6 +283,6 @@ mod tests {
             long_fair_price,
             short_fair_price,
         );
-        assert_eq!(Path::calc(&data), Path::Empty);
+        assert_eq!(Path::calc(data), Path::Empty);
     }
 }

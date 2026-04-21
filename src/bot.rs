@@ -12,9 +12,11 @@ use crate::contracts::ContractRefs;
 use self::events::{EventSource, KafkaConfig, KafkaEventSource};
 use self::liquid_staking::LsEngine;
 
+mod arb;
+mod asset_manager;
+mod casper_delta;
 mod events;
 mod liquid_staking;
-mod casper_delta;
 
 pub struct Bot;
 
@@ -42,7 +44,7 @@ impl Scenario for Bot {
         let caller = env.caller();
         let dry_run = args.get_single("dry-run").unwrap_or(false);
 
-        let setup = CasperDeltaSetup::new(env, &contracts, dry_run)?;
+        let setup = CasperDeltaSetup::new(env, &contracts, dry_run);
         let cd_engine = setup.build_engine(&contracts, caller)?;
         let mut ls_engine = LsEngine::new(&contracts, env, caller, dry_run);
         ls_engine.approve_stcspr()?;
