@@ -1,13 +1,12 @@
-mod data;
 mod engine;
 mod path;
+mod price;
 mod trader;
-mod utils;
 
 use crate::contracts::ContractRefs;
 use odra::{host::HostEnv, prelude::Address};
 use odra_cli::scenario::Error;
-use utils::PriceCalculator;
+use price::PriceCalculator;
 
 pub use engine::CasperDeltaEngine;
 

@@ -3,7 +3,7 @@ use odra::prelude::Address;
 use odra_cli::scenario::Error;
 use tracing::instrument;
 
-use super::{path::Path, trader::DeltaAssetManager, utils::PriceCalculator};
+use super::{path::Path, price::PriceCalculator, trader::DeltaAssetManager};
 use crate::bot::events::BotEvent;
 
 /// The core bot logic, decoupled from the event loop.

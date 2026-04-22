@@ -1,20 +1,20 @@
 pub mod claims;
-pub mod data;
 pub mod path;
-pub mod utils;
+pub mod price;
 
-use odra::casper_types::{U256, U512};
-use odra::host::{HostEnv, HostRef}; // HostRef required for .with_tokens() on HostRef types
-use odra::prelude::{Address, Addressable};
+use odra::{
+    casper_types::{U256, U512},
+    host::{HostEnv, HostRef}, // HostRef required for .with_tokens() on HostRef types
+    prelude::Address,
+};
 use odra_cli::{cspr, scenario::Error};
 use tracing::instrument;
 
-use crate::bot::events::BotEvent;
+use super::events::BotEvent;
 use crate::contracts::ContractRefs;
 use claims::{PendingClaim, PendingClaims};
-use data::PriceData;
 use path::Path;
-use utils::LsPriceCalculator;
+use price::{LsPriceCalculator, PriceData};
 
 const CLAIMS_FILE: &str = "pending_claims.json";
 const MIN_PROFIT_CSPR: f64 = 100.0;

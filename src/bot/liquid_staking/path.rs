@@ -1,14 +1,14 @@
 use odra::prelude::{Address, Addressable};
 use odra_cli::scenario::Error;
 
-use super::data::PriceData;
+use super::price::PriceData;
 use crate::contracts::ContractRefs;
 
 const STAKE_AND_SELL_THRESHOLD: f64 = 2.5;
 const BUY_AND_UNSTAKE_THRESHOLD: f64 = 5.0;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
-pub enum Path {
+pub(super) enum Path {
     StCsprCspr,
     CsprStCspr,
     Empty,
