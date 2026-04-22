@@ -10,10 +10,10 @@ use crate::bot::casper_delta::CasperDeltaSetup;
 use crate::contracts::ContractRefs;
 
 use self::events::{EventSource, KafkaConfig, KafkaEventSource};
-use self::liquid_staking::LsEngine;
 use self::rebalancer::RealRebalancer;
 
 mod casper_delta;
+mod engine;
 mod events;
 mod liquid_staking;
 mod rebalancer;
@@ -46,8 +46,8 @@ impl Scenario for Bot {
         let dry_run = args.get_single("dry-run").unwrap_or(false);
 
         let setup = CasperDeltaSetup::new(env, &contracts, dry_run);
-        let cd_engine = setup.build_engine(&contracts, caller)?;
-        let mut ls_engine = LsEngine::new(&contracts, env, caller, dry_run);
+        let mut cd_engine = setup.build_engine(&contracts, caller)?;
+        let mut ls_engine = liquid_staking::build_engine(&contracts, env, caller, dry_run);
         let rebalancer = RealRebalancer::from_env(env, &contracts, dry_run);
         rebalancer.approve_all()?;
         let mut event_source = self.setup_event_source(&contracts);
@@ -56,9 +56,6 @@ impl Scenario for Bot {
             tracing::info!("Event: {:?}", event);
             if let Err(e) = rebalancer.rebalance() {
                 tracing::error!("Rebalancer error: {:?}", e);
-            }
-            if let Err(e) = ls_engine.try_claim_ready() {
-                tracing::error!("LS claim error: {:?}", e);
             }
             match cd_engine.handle_event(&event) {
                 Ok(true) => {}

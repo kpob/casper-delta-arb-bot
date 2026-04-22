@@ -13,7 +13,7 @@ const BUY_AND_UNSTAKE_TX_COST_CSPR: f64 = 17.0; // swap + unstake + (later) clai
 const DECIMAL_PLACES: u32 = 9;
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct PriceData {
+pub struct PriceData {
     pub trade_size_usd: f64,
     pub dex_rate: f64,
     pub protocol_price: f64,
@@ -51,11 +51,12 @@ impl PriceData {
         match path {
             super::path::Path::StCsprCspr => self.stcspr_for_trade_unit,
             super::path::Path::CsprStCspr => self.wcspr_for_trade_unit,
-            super::path::Path::Empty => U256::zero(),
         }
     }
+}
 
-    pub fn log(&self) {
+impl crate::bot::engine::LogPrices for PriceData {
+    fn log(&self) {
         tracing::info!(
             dex_rate = self.dex_rate,
             protocol_price = self.protocol_price,
@@ -130,7 +131,6 @@ impl LsPriceCalculator {
                 amount_out.as_u64() as f64 * price_data.protocol_price,
                 BUY_AND_UNSTAKE_TX_COST_CSPR,
             ),
-            Path::Empty => return 0.0,
         };
         (amount_out_cspr - amount_in_cspr) / 1_000_000_000.0 - tx_cost
     }

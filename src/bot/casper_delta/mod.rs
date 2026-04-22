@@ -10,6 +10,7 @@ use price::PriceCalculator;
 
 pub use engine::CasperDeltaEngine;
 
+use self::engine::CasperDeltaStrategy;
 use self::trader::{DeltaAssetManager, DeltaOps, DryRunDeltaOps, RealDeltaOps};
 
 /// Owns the dependencies that `CasperDeltaEngine` borrows from.
@@ -35,7 +36,7 @@ impl<'a> CasperDeltaSetup<'a> {
     ) -> Result<CasperDeltaEngine<'a>, Error> {
         let calc = PriceCalculator::new(refs);
         let delta_assets = DeltaAssetManager::new(&*self.delta_ops);
-        // delta_assets.print_balances()?;
-        Ok(CasperDeltaEngine::new(calc, delta_assets, caller))
+        let strategy = CasperDeltaStrategy::new(calc, delta_assets);
+        Ok(CasperDeltaEngine::new(strategy, caller))
     }
 }

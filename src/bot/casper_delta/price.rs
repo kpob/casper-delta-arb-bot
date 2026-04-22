@@ -69,13 +69,12 @@ impl PriceData {
             Path::ShortWcspr => self.shorts_per_trade_unit,
             Path::WcsprLong => self.wcspr_per_trade_unit,
             Path::WcsprShort => self.wcspr_per_trade_unit,
-            Path::Empty => U256::zero(),
         }
     }
 }
 
-impl PriceData {
-    pub fn log(&self) {
+impl crate::bot::engine::LogPrices for PriceData {
+    fn log(&self) {
         tracing::info!(
             long_dex_rate = self.long_dex_rate,
             short_dex_rate = self.short_dex_rate,
@@ -212,7 +211,6 @@ impl<'a> PriceCalculator<'a> {
             Path::ShortWcspr => (amount_in * price_data.short_protocol_price, amount_out),
             Path::WcsprLong => (amount_in, amount_out * price_data.long_protocol_price),
             Path::WcsprShort => (amount_in, amount_out * price_data.short_protocol_price),
-            Path::Empty => return 0.0f64,
         };
         (amount_out_cspr - amount_in_cspr) / 1_000_000_000.0f64 - average_transaction_cost
     }

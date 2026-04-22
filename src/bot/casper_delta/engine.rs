@@ -1,92 +1,80 @@
 use odra::casper_types::U256;
 use odra::prelude::Address;
 use odra_cli::scenario::Error;
-use tracing::instrument;
 
-use super::{path::Path, price::PriceCalculator, trader::DeltaAssetManager};
-use crate::bot::events::BotEvent;
+use super::{
+    path::Path,
+    price::{PriceCalculator, PriceData},
+    trader::DeltaAssetManager,
+};
+use crate::bot::engine::{Engine, Strategy};
 
-/// The core bot logic, decoupled from the event loop.
-pub struct CasperDeltaEngine<'a> {
+pub type CasperDeltaEngine<'a> = Engine<CasperDeltaStrategy<'a>>;
+
+pub struct CasperDeltaStrategy<'a> {
     calc: PriceCalculator<'a>,
     asset_manager: DeltaAssetManager<'a>,
-    caller: Address,
 }
 
-impl<'a> CasperDeltaEngine<'a> {
-    pub fn new(
-        calc: PriceCalculator<'a>,
-        asset_manager: DeltaAssetManager<'a>,
-        caller: Address,
-    ) -> Self {
+impl<'a> CasperDeltaStrategy<'a> {
+    pub fn new(calc: PriceCalculator<'a>, asset_manager: DeltaAssetManager<'a>) -> Self {
         Self {
             calc,
             asset_manager,
-            caller,
+        }
+    }
+}
+
+impl<'a> Strategy for CasperDeltaStrategy<'a> {
+    type PriceData = PriceData;
+    type Path = Path;
+
+    const NAME: &'static str = "CasperDelta";
+    const MIN_PROFIT_CSPR: f64 = 1.0;
+
+    fn fetch_prices(&self) -> Result<Self::PriceData, Error> {
+        self.calc.price_data()
+    }
+
+    fn select_path(data: Self::PriceData) -> Option<Self::Path> {
+        Self::Path::select(data)
+    }
+
+    fn estimate(&self, data: Self::PriceData, path: Self::Path) -> Result<(U256, U256), Error> {
+        let amounts = self.calc.effective_price(data, path)?;
+        match amounts.as_slice() {
+            [amount_in, .., amount_out] => Ok((*amount_in, *amount_out)),
+            _ => Err(Error::OdraError {
+                message: "Invalid swap amounts".to_string(),
+            }),
         }
     }
 
-    /// Handle a single event. Returns `Ok(true)` to continue, `Ok(false)` to stop.
-    #[instrument(skip(self))]
-    pub fn handle_event(&self, event: &BotEvent) -> Result<bool, Error> {
-        match event {
-            BotEvent::TimerTick | BotEvent::TradeExecuted | BotEvent::PriceChanged => {
-                self.try_trade()?;
-                Ok(true)
-            }
-            BotEvent::Shutdown => {
-                tracing::info!("Shutdown event received");
-                Ok(false)
-            }
-        }
+    fn cspr_profit(
+        amount_in: U256,
+        amount_out: U256,
+        data: Self::PriceData,
+        path: Self::Path,
+    ) -> f64 {
+        PriceCalculator::cspr_profit(amount_in, amount_out, data, path)
     }
 
-    /// Fetch prices, find arbitrage path, execute swap if profitable.
-    fn try_trade(&self) -> Result<(), Error> {
-        let price_data = self.calc.price_data()?;
-        price_data.log();
-
-        let path = Path::from(price_data);
-        tracing::info!("Swap path: {:?}", path);
-        if path == Path::Empty {
-            tracing::info!("No arbitrage path found");
-            return Ok(());
-        }
-
-        let amounts = self.calc.effective_price(price_data, path);
-        if let Ok([amount_in, .., amount_out]) = amounts.as_deref() {
-            let predicted_profit =
-                PriceCalculator::cspr_profit(*amount_in, *amount_out, price_data, path);
-            tracing::info!("Predicted profit: {:<10.4} CSPR", predicted_profit);
-            if predicted_profit < 1.0f64 {
-                tracing::info!("Predicted profit below threshold, skipping swap");
-                return Ok(());
-            }
-
-            let (actual_amount_in, actual_amount_out) = self.swap(path, *amount_in, *amount_out)?;
-            let actual_gain =
-                PriceCalculator::cspr_profit(actual_amount_in, actual_amount_out, price_data, path);
-            tracing::info!("Actual gain: {:<10.4} CSPR", actual_gain);
-        } else {
-            tracing::info!("No valid swap amounts found");
-        }
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
-    fn swap(&self, path: Path, amount_in: U256, amount_out: U256) -> Result<(U256, U256), Error> {
-        tracing::info!("Preparing swap...");
+    fn execute(
+        &mut self,
+        _data: Self::PriceData,
+        path: Self::Path,
+        amount_in: U256,
+        amount_out: U256,
+        caller: Address,
+    ) -> Result<(U256, U256), Error> {
         let result = self
             .asset_manager
-            .swap(path, amount_in, amount_out, self.caller)?;
-        tracing::info!("Arbitrage swap completed");
-
-        if let [amount_in, .., amount_out] = result.as_slice() {
-            Ok((*amount_in, *amount_out))
-        } else {
-            Err(Error::OdraError {
+            .swap(path, amount_in, amount_out, caller)?;
+        match result.as_slice() {
+            [amount_in, .., amount_out] => Ok((*amount_in, *amount_out)),
+            _ => Err(Error::OdraError {
                 message: "Invalid swap result".to_string(),
-            })
+            }),
         }
     }
 }
