@@ -1,6 +1,5 @@
 use odra::casper_types::{U256, U512};
 use odra::prelude::Addressable; // required to call .address() on HostRef types
-use odra::uints::ToU512;
 use odra_cli::scenario::Error;
 
 const STAKE_AND_SELL_TX_COST_CSPR: f64 = 20.0; // unwrap + stake + swap
@@ -9,6 +8,7 @@ const DECIMAL_PLACES: u32 = 9;
 
 use super::data::PriceData;
 use super::path::Path;
+use crate::bot::utils;
 use crate::contracts::ContractRefs;
 
 pub(super) struct LsPriceCalculator;
@@ -39,12 +39,12 @@ impl LsPriceCalculator {
         let staked: U512 = sc.staked_cspr();
         let supply: U256 = sc.total_supply();
 
-        let fair_price = Self::calculate_price_u512(staked, supply);
+        let fair_price = utils::calculate_price_u512(staked, supply);
         let dex_price =
             contracts
                 .router()?
                 .get_amount_out(wcspr_in, reserves_wcspr, reserves_stcspr);
-        let dex_price = Self::calculate_price(dex_price, 1.into());
+        let dex_price = utils::calculate_price(dex_price, 1.into());
 
         Ok(PriceData::new(dex_price, fair_price, wcspr_price))
     }
@@ -75,16 +75,5 @@ impl LsPriceCalculator {
             Path::Empty => return 0.0,
         };
         (amount_out_cspr - amount_in_cspr) / 1_000_000_000.0 - tx_cost
-    }
-
-    fn calculate_price(amount0: U256, amount1: U256) -> f64 {
-        (amount0 * U256::from(1_000_000u64) / amount1).as_u64() as f64 / 1_000_000.0
-    }
-
-    /// Same as `calculate_price` but accepts U512 as the numerator (for
-    /// `staked_cspr()` which returns U512).
-    fn calculate_price_u512(amount0: U512, amount1: U256) -> f64 {
-        let scaled = amount0 * U512::from(1_000_000u64) / amount1.to_u512();
-        scaled.as_u64() as f64 / 1_000_000.0
     }
 }

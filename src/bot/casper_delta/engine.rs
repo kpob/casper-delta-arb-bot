@@ -3,7 +3,7 @@ use odra::prelude::Address;
 use odra_cli::scenario::Error;
 use tracing::instrument;
 
-use super::{data::PriceData, path::Path, trader::DeltaAssetManager, utils::PriceCalculator};
+use super::{path::Path, trader::DeltaAssetManager, utils::PriceCalculator};
 use crate::bot::events::BotEvent;
 
 /// The core bot logic, decoupled from the event loop.
@@ -31,7 +31,7 @@ impl<'a> CasperDeltaEngine<'a> {
     pub fn handle_event(&self, event: &BotEvent) -> Result<bool, Error> {
         match event {
             BotEvent::TimerTick | BotEvent::TradeExecuted | BotEvent::PriceChanged => {
-                self.check_and_trade()?;
+                self.try_trade()?;
                 Ok(true)
             }
             BotEvent::Shutdown => {
@@ -42,12 +42,9 @@ impl<'a> CasperDeltaEngine<'a> {
     }
 
     /// Fetch prices, find arbitrage path, execute swap if profitable.
-    fn check_and_trade(&self) -> Result<(), Error> {
-        let price_data = self.get_price_data()?;
+    fn try_trade(&self) -> Result<(), Error> {
+        let price_data = self.calc.price_data()?;
         price_data.log();
-
-        self.asset_manager
-            .manage_asset_levels(price_data, self.caller)?;
 
         let path = Path::from(price_data);
         tracing::info!("Swap path: {:?}", path);
@@ -76,19 +73,6 @@ impl<'a> CasperDeltaEngine<'a> {
         Ok(())
     }
 
-    fn get_price_data(&self) -> Result<PriceData, Error> {
-        let (long_dex_rate, short_dex_rate) = self.calc.casper_trade_rates()?;
-        let (long_protocol_price, short_protocol_price, wcspr_price) =
-            self.calc.protocol_prices()?;
-        Ok(PriceData::new(
-            long_dex_rate,
-            short_dex_rate,
-            wcspr_price,
-            long_protocol_price,
-            short_protocol_price,
-        ))
-    }
-
     #[instrument(skip(self))]
     fn swap(&self, path: Path, amount_in: U256, amount_out: U256) -> Result<(U256, U256), Error> {
         tracing::info!("Preparing swap...");
@@ -96,7 +80,6 @@ impl<'a> CasperDeltaEngine<'a> {
             .asset_manager
             .swap(path, amount_in, amount_out, self.caller)?;
         tracing::info!("Arbitrage swap completed");
-        self.asset_manager.print_balances()?;
 
         if let [amount_in, .., amount_out] = result.as_slice() {
             Ok((*amount_in, *amount_out))

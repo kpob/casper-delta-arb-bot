@@ -17,7 +17,7 @@ use path::Path;
 use utils::LsPriceCalculator;
 
 const CLAIMS_FILE: &str = "pending_claims.json";
-const MIN_PROFIT_CSPR: f64 = 50.0;
+const MIN_PROFIT_CSPR: f64 = 100.0;
 
 pub struct LsEngine<'a> {
     contracts: &'a ContractRefs<'a>,
@@ -43,28 +43,6 @@ impl<'a> LsEngine<'a> {
         }
     }
 
-    /// Approves the Router to spend sCSPR on behalf of the caller.
-    /// Must be called once at startup before any StakeAndSell swap.
-    pub fn approve_stcspr(&self) -> Result<(), Error> {
-        if self.dry_run {
-            return Ok(());
-        }
-        let me = self.caller;
-        let router_addr = self.contracts.router()?.address();
-        if self
-            .contracts
-            .staked_cspr()?
-            .allowance(&me, &router_addr)
-            .is_zero()
-        {
-            self.env.set_gas(cspr!(4));
-            self.contracts
-                .staked_cspr()?
-                .approve(&router_addr, &U256::MAX);
-        }
-        Ok(())
-    }
-
     /// Attempts to claim any matured unstakes. Call this before each arb check.
     #[instrument(skip(self))]
     pub fn try_claim_ready(&mut self) -> Result<(), Error> {
@@ -88,14 +66,14 @@ impl<'a> LsEngine<'a> {
     pub fn handle_event(&mut self, event: &BotEvent) -> Result<bool, Error> {
         match event {
             BotEvent::TimerTick | BotEvent::TradeExecuted | BotEvent::PriceChanged => {
-                self.check_and_trade()?;
+                self.try_trade()?;
                 Ok(true)
             }
             BotEvent::Shutdown => Ok(false),
         }
     }
 
-    fn check_and_trade(&mut self) -> Result<(), Error> {
+    fn try_trade(&mut self) -> Result<(), Error> {
         let price_data = LsPriceCalculator::prices(self.contracts)?;
         price_data.log();
 

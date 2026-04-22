@@ -1,8 +1,12 @@
+// use casper_delta_contracts::price_data::PriceData;
 use odra::{casper_types::U256, prelude::Addressable};
 use odra_cli::scenario::Error;
 
 use super::path::Path;
-use crate::{bot::casper_delta::data::PriceData, contracts::ContractRefs};
+use crate::{
+    bot::{casper_delta::data::PriceData, utils},
+    contracts::ContractRefs,
+};
 
 pub struct PriceCalculator<'a> {
     contracts: &'a ContractRefs<'a>,
@@ -13,31 +17,17 @@ impl<'a> PriceCalculator<'a> {
         Self { contracts }
     }
 
-    /// Calculates the long and short token prices on the DEX based on the pair reserves.
-    /// Does not reflect swap fees or price impact from the trade size.
-    pub fn casper_trade_rates(&self) -> Result<(f64, f64), Error> {
-        let (reserves_long, reserves_wcspr_long, _) =
-            self.contracts.long_wcspr_pair()?.get_reserves();
-        let (reserves_wcspr_short, reserves_short, _) =
-            self.contracts.wcspr_short_pair()?.get_reserves();
+    pub fn price_data(&self) -> Result<PriceData, Error> {
+        let (long_dex_rate, short_dex_rate) = self.casper_trade_rates()?;
+        let (long_protocol_price, short_protocol_price, wcspr_price) = self.protocol_prices()?;
 
-        let long_token_rate = Self::calculate_price(reserves_wcspr_long, reserves_long);
-        let short_token_rate = Self::calculate_price(reserves_wcspr_short, reserves_short);
-
-        Ok((long_token_rate, short_token_rate))
-    }
-
-    /// Prices result from the protocol design.
-    pub fn protocol_prices(&self) -> Result<(f64, f64, f64), Error> {
-        let market = self.contracts.market()?;
-        let state = market
-            .try_get_address_market_state(market.address())?
-            .market_state;
-        let long_price = Self::calculate_price(state.long_liquidity, state.long_total_supply);
-        let short_price = Self::calculate_price(state.short_liquidity, state.short_total_supply);
-        let wcspr_price = state.price().as_u64() as f64 / 100_000.0f64;
-
-        Ok((long_price, short_price, wcspr_price))
+        Ok(PriceData::new(
+            long_dex_rate,
+            short_dex_rate,
+            long_protocol_price,
+            short_protocol_price,
+            wcspr_price,
+        ))
     }
 
     pub fn effective_price(&self, price_data: PriceData, path: Path) -> Result<Vec<U256>, Error> {
@@ -59,8 +49,31 @@ impl<'a> PriceCalculator<'a> {
         }
     }
 
-    fn calculate_price(amount0: U256, amount1: U256) -> f64 {
-        (amount0 * U256::from(1_000_000) / amount1).as_u64() as f64 / 1000_000.0f64
+    /// Calculates the long and short token prices on the DEX based on the pair reserves.
+    /// Does not reflect swap fees or price impact from the trade size.
+    fn casper_trade_rates(&self) -> Result<(f64, f64), Error> {
+        let (reserves_long, reserves_wcspr_long, _) =
+            self.contracts.long_wcspr_pair()?.get_reserves();
+        let (reserves_wcspr_short, reserves_short, _) =
+            self.contracts.wcspr_short_pair()?.get_reserves();
+
+        let long_token_rate = utils::calculate_price(reserves_wcspr_long, reserves_long);
+        let short_token_rate = utils::calculate_price(reserves_wcspr_short, reserves_short);
+
+        Ok((long_token_rate, short_token_rate))
+    }
+
+    /// Prices result from the protocol design.
+    fn protocol_prices(&self) -> Result<(f64, f64, f64), Error> {
+        let market = self.contracts.market()?;
+        let state = market
+            .try_get_address_market_state(market.address())?
+            .market_state;
+        let long_price = utils::calculate_price(state.long_liquidity, state.long_total_supply);
+        let short_price = utils::calculate_price(state.short_liquidity, state.short_total_supply);
+        let wcspr_price = state.price().as_u64() as f64 / 100_000.0f64;
+
+        Ok((long_price, short_price, wcspr_price))
     }
 
     pub fn cspr_profit(
