@@ -692,6 +692,7 @@ impl Ops for RealOps<'_> {
     fn wrap(&self, cspr_amount: U256) -> Result<(), Error> {
         self.set_gas();
         let amount = U512::from(cspr_amount.as_u128());
+        self.env.set_gas(cspr!(3));
         self.refs.wcspr()?.with_tokens(amount).try_deposit()?;
         Ok(())
     }
@@ -703,20 +704,20 @@ impl Ops for RealOps<'_> {
     }
 
     fn stake(&self, cspr_amount: U256) -> Result<(), Error> {
-        self.set_gas();
+        self.env.set_gas(cspr!(9));
         let amount = U512::from(cspr_amount.as_u128());
         self.refs.staked_cspr()?.with_tokens(amount).try_stake()?;
         Ok(())
     }
 
     fn unstake(&self, stcspr_amount: U256) -> Result<(), Error> {
-        self.set_gas();
+        self.env.set_gas(cspr!(8));
         self.refs.staked_cspr()?.try_unstake(stcspr_amount)?;
         Ok(())
     }
 
     fn claim(&self) -> Result<(), Error> {
-        self.set_gas();
+        self.env.set_gas(cspr!(8));
         self.refs.staked_cspr()?.try_claim()?;
         Ok(())
     }
