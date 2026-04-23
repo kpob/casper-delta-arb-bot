@@ -15,7 +15,6 @@ target/
 
 # Watched files
 .env
-.env.*
 
 # OS generated files
 .DS_Store
