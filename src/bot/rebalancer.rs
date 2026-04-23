@@ -1,13 +1,16 @@
 //! Rebalancer — keeps trading-account asset levels within per-asset bands.
 //!
 //! Policy (see `Rebalancer.md`):
-//! * Target when an asset is **below min**: the band midpoint `(min+max)/2`.
-//! * Target when an asset is **above max**: `min * 1.25`.
+//! * Target when an asset is **below min** or **above max**: the band midpoint
+//!   `(min+max)/2`.
 //! * A source asset used to refill another must not drop below its own
 //!   `min * 1.25` floor.
 //! * When refilling **CSPR**, drain sources in order of **highest balance
 //!   first** (WCSPR → unwrap, stCSPR → unstake).
-//! * When dumping an excess, pick the sink with the **lowest balance**.
+//! * When draining excess **CSPR**, prefer **wrap** (reversible, cheaper gas);
+//!   fall back to **stake** only when WCSPR is at its max. The amount is
+//!   clamped to the sink's own headroom (`sink_max - sink_balance`) so the
+//!   drain never pushes the sink past its max.
 //! * At most one action per rebalance tick per asset is expected in practice;
 //!   assets are processed in priority order CSPR → WCSPR → stCSPR → long →
 //!   short and the first imbalance short-circuits the tick.
@@ -69,9 +72,9 @@ impl Levels {
         (self.min + self.max) / U256::from(2u64)
     }
 
-    /// Target when balance is above `max`; also the floor below which a
-    /// source asset must not be drained.
-    pub fn upper_target(&self) -> U256 {
+    /// Floor below which a source asset must not be drained when used to
+    /// refill another asset (`min * 1.25`).
+    pub fn spend_floor(&self) -> U256 {
         self.min + self.min / U256::from(4u64)
     }
 }
@@ -337,7 +340,7 @@ impl<'a> Rebalancer<'a> {
             return Ok(true);
         }
         if bal > lvls.max {
-            let excess = bal - lvls.upper_target();
+            let excess = bal - lvls.midpoint();
             let formatted_bal = format_amount(bal);
             let formatted_excess = format_amount(excess);
             tracing::info!(
@@ -507,22 +510,32 @@ impl<'a> Rebalancer<'a> {
         }
     }
 
-    /// Drain excess CSPR into whichever of WCSPR / stCSPR has the **lower**
-    /// current balance.
+    /// Drain excess CSPR. Prefer wrap (reversible, cheapest gas); fall back
+    /// to stake only when WCSPR has no headroom. Amount is clamped to the
+    /// chosen sink's headroom so we never push it past its own max.
     fn drain_cspr(&self, excess: U256) -> Result<(), Error> {
         let wcspr_bal = self.balances.wcspr()?;
-        let stcspr_bal = self.balances.stcspr()?;
-        if wcspr_bal <= stcspr_bal {
-            tracing::info!("Wrapping {excess} CSPR → WCSPR");
+        let wcspr_headroom = self.cfg.wcspr.max.saturating_sub(wcspr_bal);
+        if !wcspr_headroom.is_zero() {
+            let amount = min_u256(excess, wcspr_headroom);
+            tracing::info!("Wrapping {amount} CSPR → WCSPR");
             if !self.dry_run {
-                self.ops.wrap(excess)?;
+                self.ops.wrap(amount)?;
             }
-        } else {
-            tracing::info!("Staking {excess} CSPR → stCSPR");
-            if !self.dry_run {
-                self.ops.stake(excess)?;
-            }
+            return Ok(());
         }
+        let stcspr_bal = self.balances.stcspr()?;
+        let stcspr_headroom = self.cfg.stcspr.max.saturating_sub(stcspr_bal);
+        let stcspr_headroom_cspr = self.rates.stcspr_to_cspr(stcspr_headroom)?;
+        if !stcspr_headroom_cspr.is_zero() {
+            let amount = min_u256(excess, stcspr_headroom_cspr);
+            tracing::info!("Staking {amount} CSPR → stCSPR");
+            if !self.dry_run {
+                self.ops.stake(amount)?;
+            }
+            return Ok(());
+        }
+        tracing::warn!("Cannot drain CSPR: both WCSPR and stCSPR at/above max");
         Ok(())
     }
 
@@ -548,7 +561,7 @@ impl<'a> Rebalancer<'a> {
     /// floor. Returns zero if already at or below the floor.
     fn spendable(&self, asset: Asset) -> Result<U256, Error> {
         let bal = self.balance(asset)?;
-        let floor = self.cfg.levels(asset).upper_target();
+        let floor = self.cfg.levels(asset).spend_floor();
         Ok(bal.saturating_sub(floor))
     }
 }
@@ -956,13 +969,13 @@ mod tests {
     }
 
     #[test]
-    fn levels_midpoint_and_upper_target() {
+    fn levels_midpoint_and_spend_floor() {
         let l = Levels {
             min: u(10_000),
             max: u(30_000),
         };
         assert_eq!(l.midpoint(), u(20_000));
-        assert_eq!(l.upper_target(), u(12_500));
+        assert_eq!(l.spend_floor(), u(12_500));
     }
 
     #[test]
@@ -1127,21 +1140,22 @@ mod tests {
     }
 
     #[test]
-    fn drain_cspr_routes_to_lower_balance_sink() {
+    fn drain_cspr_prefers_wrap_when_wcspr_has_headroom() {
         let cfg = base_cfg();
-        // CSPR=40_000 (above 30_000 max); target=12_500; excess=27_500.
-        // WCSPR=10_000, stCSPR=20_000 → wcspr is lower → wrap.
+        // CSPR=40_000 (above 30_000 max); target=midpoint 20_000; excess=20_000.
+        // WCSPR=10_000 → headroom=20_000 → wrap full excess. stCSPR is not queried.
         let mut b = MockBalances::new();
         b.expect_cspr().returning(|| Ok(u(40_000)));
         b.expect_wcspr().returning(|| Ok(u(10_000)));
-        b.expect_stcspr().returning(|| Ok(u(20_000)));
         b.expect_long().returning(|| Ok(u(2_000)));
         b.expect_short().returning(|| Ok(u(150)));
+        // stCSPR balance is read once by log_state.
+        b.expect_stcspr().returning(|| Ok(u(20_000)));
         let rates = MockRates::new();
         let mut ops = MockOps::new();
         ops.expect_has_allowance().returning(|_| Ok(true));
         ops.expect_wrap()
-            .withf(|a| *a == u(27_500))
+            .withf(|a| *a == u(20_000))
             .times(1)
             .returning(|_| Ok(()));
         let state = no_pending_store();
@@ -1152,9 +1166,65 @@ mod tests {
     }
 
     #[test]
+    fn drain_cspr_falls_back_to_stake_when_wcspr_at_max_and_clamps_to_headroom() {
+        let cfg = base_cfg();
+        // CSPR=40_000 (excess=20_000 vs midpoint).
+        // WCSPR=30_000 (at max → no headroom). stCSPR=25_000 → headroom=5_000.
+        // Stake is clamped to 5_000 (sink headroom), not the full 20_000 excess.
+        let mut b = MockBalances::new();
+        b.expect_cspr().returning(|| Ok(u(40_000)));
+        b.expect_wcspr().returning(|| Ok(u(30_000)));
+        b.expect_stcspr().returning(|| Ok(u(25_000)));
+        b.expect_long().returning(|| Ok(u(2_000)));
+        b.expect_short().returning(|| Ok(u(150)));
+        let mut rates = MockRates::new();
+        // 1:1 staking rate for test purposes.
+        rates
+            .expect_stcspr_to_cspr()
+            .withf(|a| *a == u(5_000))
+            .returning(|a| Ok(a));
+        let mut ops = MockOps::new();
+        ops.expect_has_allowance().returning(|_| Ok(true));
+        ops.expect_stake()
+            .withf(|a| *a == u(5_000))
+            .times(1)
+            .returning(|_| Ok(()));
+        let state = no_pending_store();
+        let clock = fixed_clock(0);
+
+        let r = Rebalancer::new(&cfg, false, &b, &rates, &ops, &state, &clock);
+        r.rebalance().unwrap();
+    }
+
+    #[test]
+    fn drain_cspr_noop_when_all_sinks_at_max() {
+        let cfg = base_cfg();
+        // WCSPR and stCSPR both at max; no drain possible this tick.
+        let mut b = MockBalances::new();
+        b.expect_cspr().returning(|| Ok(u(40_000)));
+        b.expect_wcspr().returning(|| Ok(u(30_000)));
+        b.expect_stcspr().returning(|| Ok(u(30_000)));
+        b.expect_long().returning(|| Ok(u(2_000)));
+        b.expect_short().returning(|| Ok(u(150)));
+        let mut rates = MockRates::new();
+        rates
+            .expect_stcspr_to_cspr()
+            .withf(|a| a.is_zero())
+            .returning(|_| Ok(U256::zero()));
+        let mut ops = MockOps::new();
+        ops.expect_has_allowance().returning(|_| Ok(true));
+        // No wrap/stake expected.
+        let state = no_pending_store();
+        let clock = fixed_clock(0);
+
+        let r = Rebalancer::new(&cfg, false, &b, &rates, &ops, &state, &clock);
+        r.rebalance().unwrap();
+    }
+
+    #[test]
     fn drain_long_sells_excess() {
         let cfg = base_cfg();
-        // long=5_000 (max=4_000); upper_target=1_250; excess=3_750.
+        // long=5_000 (max=4_000); midpoint=2_500; excess=2_500.
         let mut b = MockBalances::new();
         b.expect_cspr().returning(|| Ok(u(20_000)));
         b.expect_wcspr().returning(|| Ok(u(20_000)));
@@ -1165,7 +1235,7 @@ mod tests {
         let mut ops = MockOps::new();
         ops.expect_has_allowance().returning(|_| Ok(true));
         ops.expect_sell_long()
-            .withf(|a| *a == u(3_750))
+            .withf(|a| *a == u(2_500))
             .times(1)
             .returning(|_| Ok(()));
         let state = no_pending_store();
