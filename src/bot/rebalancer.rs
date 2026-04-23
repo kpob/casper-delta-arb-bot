@@ -132,7 +132,7 @@ fn env_u256(key: &str, default: u128) -> U256 {
         .as_deref()
         .map(|s| {
             s.parse::<u128>()
-                .unwrap_or_else(|_| panic!("Invalid {key}"))
+                .unwrap_or_else(|e| panic!("Invalid {key} {e} {s}."))
         })
         .unwrap_or(default);
     U256::from(v)
