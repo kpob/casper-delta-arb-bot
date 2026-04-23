@@ -36,7 +36,7 @@ impl<'a> Strategy for LsStrategy<'a> {
     type Path = Path;
 
     const NAME: &'static str = "LiquidStaking";
-    const MIN_PROFIT_CSPR: f64 = 100.0;
+    const MIN_PROFIT_CSPR: f64 = 75.0;
     const TRADE_SCOPE: TradeScope = TradeScope::LiquidStaking;
 
     #[instrument(skip(self))]
