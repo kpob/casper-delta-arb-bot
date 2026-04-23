@@ -11,6 +11,10 @@
 //!   fall back to **stake** only when WCSPR is at its max. The amount is
 //!   clamped to the sink's own headroom (`sink_max - sink_balance`) so the
 //!   drain never pushes the sink past its max.
+//! * **Deadband / hysteresis.** A rebalance is triggered only when the balance
+//!   is at least `deadband_bps` of band width past `min` (for fills) or `max`
+//!   (for drains). Small excursions are tolerated to avoid fee-burning
+//!   micro-rebalances on normal trade-induced oscillations.
 //! * At most one action per rebalance tick per asset is expected in practice;
 //!   assets are processed in priority order CSPR → WCSPR → stCSPR → long →
 //!   short and the first imbalance short-circuits the tick.
@@ -36,6 +40,8 @@ use mockall::automock;
 
 pub const DEFAULT_STATE_PATH: &str = "./rebalancer-state.json";
 pub const UNSTAKE_MATURITY_SECS: u64 = 16 * 60 * 60;
+/// Default hysteresis margin, in basis points of band width (500 = 5%).
+pub const DEFAULT_DEADBAND_BPS: u64 = 500;
 
 // ---------------------------------------------------------------------------
 // Assets & levels
@@ -77,6 +83,14 @@ impl Levels {
     pub fn spend_floor(&self) -> U256 {
         self.min + self.min / U256::from(4u64)
     }
+
+    /// Hysteresis margin for this band at `deadband_bps` (basis points of
+    /// band width). A balance within `[min - margin, max + margin]` is
+    /// treated as in-band.
+    pub fn deadband_margin(&self, deadband_bps: u64) -> U256 {
+        let width = self.max - self.min;
+        width * U256::from(deadband_bps) / U256::from(10_000u64)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +101,9 @@ pub struct Config {
     pub long: Levels,
     pub short: Levels,
     pub state_path: PathBuf,
+    /// Hysteresis in basis points of band width; a balance within
+    /// `[min - margin, max + margin]` won't trigger a rebalance.
+    pub deadband_bps: u64,
 }
 
 impl Config {
@@ -115,6 +132,10 @@ impl Config {
             state_path: std::env::var("BOT_REBALANCER_STATE_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(DEFAULT_STATE_PATH)),
+            deadband_bps: std::env::var("BOT_REBALANCE_DEADBAND_BPS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(DEFAULT_DEADBAND_BPS),
         }
     }
 
@@ -329,7 +350,10 @@ impl<'a> Rebalancer<'a> {
     fn try_rebalance_asset(&self, asset: Asset) -> Result<bool, Error> {
         let bal = self.balance(asset)?;
         let lvls = self.cfg.levels(asset);
-        if bal < lvls.min {
+        let margin = lvls.deadband_margin(self.cfg.deadband_bps);
+        let fill_trigger = lvls.min.saturating_sub(margin);
+        let drain_trigger = lvls.max + margin;
+        if bal < fill_trigger {
             let deficit = lvls.midpoint() - bal;
             let formatted_bal = format_amount(bal);
             let formatted_deficit = format_amount(deficit);
@@ -339,7 +363,7 @@ impl<'a> Rebalancer<'a> {
             self.fill(asset, deficit)?;
             return Ok(true);
         }
-        if bal > lvls.max {
+        if bal > drain_trigger {
             let excess = bal - lvls.midpoint();
             let formatted_bal = format_amount(bal);
             let formatted_excess = format_amount(excess);
@@ -947,6 +971,8 @@ mod tests {
                 max: u(300),
             },
             state_path: PathBuf::from("/tmp/unused"),
+            // Tests assert exact boundary behavior; keep hysteresis off here.
+            deadband_bps: 0,
         }
     }
 
@@ -1326,6 +1352,64 @@ mod tests {
 
         let r = Rebalancer::new(&cfg, false, &b, &rates, &ops, &state, &clock);
         r.rebalance().unwrap();
+    }
+
+    #[test]
+    fn deadband_suppresses_small_excursions_past_max() {
+        let mut cfg = base_cfg();
+        cfg.deadband_bps = 500; // 5% of band width = 1_000 on a 20k-wide CSPR band.
+        // CSPR=30_500, just 500 past the 30k max — within hysteresis margin, no drain.
+        let mut b = MockBalances::new();
+        b.expect_cspr().returning(|| Ok(u(30_500)));
+        b.expect_wcspr().returning(|| Ok(u(20_000)));
+        b.expect_stcspr().returning(|| Ok(u(20_000)));
+        b.expect_long().returning(|| Ok(u(2_000)));
+        b.expect_short().returning(|| Ok(u(150)));
+        let rates = MockRates::new();
+        let ops = approvals_ok_ops();
+        // No wrap/stake/etc. expected.
+        let state = no_pending_store();
+        let clock = fixed_clock(0);
+
+        let r = Rebalancer::new(&cfg, false, &b, &rates, &ops, &state, &clock);
+        r.rebalance().unwrap();
+    }
+
+    #[test]
+    fn deadband_still_triggers_when_excursion_exceeds_margin() {
+        let mut cfg = base_cfg();
+        cfg.deadband_bps = 500; // margin = 1_000 on CSPR band.
+        // CSPR=31_500 → 1_500 past max, exceeds margin → drain.
+        // Excess to midpoint = 31_500 - 20_000 = 11_500, capped by WCSPR headroom 10_000.
+        let mut b = MockBalances::new();
+        b.expect_cspr().returning(|| Ok(u(31_500)));
+        b.expect_wcspr().returning(|| Ok(u(20_000)));
+        b.expect_stcspr().returning(|| Ok(u(20_000)));
+        b.expect_long().returning(|| Ok(u(2_000)));
+        b.expect_short().returning(|| Ok(u(150)));
+        let rates = MockRates::new();
+        let mut ops = MockOps::new();
+        ops.expect_has_allowance().returning(|_| Ok(true));
+        ops.expect_wrap()
+            .withf(|a| *a == u(10_000))
+            .times(1)
+            .returning(|_| Ok(()));
+        let state = no_pending_store();
+        let clock = fixed_clock(0);
+
+        let r = Rebalancer::new(&cfg, false, &b, &rates, &ops, &state, &clock);
+        r.rebalance().unwrap();
+    }
+
+    #[test]
+    fn deadband_margin_computes_band_width_bps() {
+        let l = Levels {
+            min: u(10_000),
+            max: u(30_000),
+        };
+        assert_eq!(l.deadband_margin(0), u(0));
+        assert_eq!(l.deadband_margin(500), u(1_000)); // 5% of 20k
+        assert_eq!(l.deadband_margin(10_000), u(20_000)); // 100% of 20k
     }
 
     #[test]
