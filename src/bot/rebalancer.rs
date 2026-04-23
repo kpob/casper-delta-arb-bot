@@ -256,6 +256,7 @@ impl<'a> Rebalancer<'a> {
     /// first imbalanced asset, in priority order. Should be called before any
     /// engine action on each event-loop tick.
     pub fn rebalance(&self) -> Result<(), Error> {
+        self.log_state()?;
         if self.try_claim_matured()? {
             return Ok(());
         }
@@ -264,6 +265,31 @@ impl<'a> Rebalancer<'a> {
                 return Ok(());
             }
         }
+        Ok(())
+    }
+
+    fn log_state(&self) -> Result<(), Error> {
+        let cspr = self.balances.cspr()?;
+        let wcspr = self.balances.wcspr()?;
+        let stcspr = self.balances.stcspr()?;
+        let long = self.balances.long()?;
+        let short = self.balances.short()?;
+        let row = |name: &str, bal: U256, lvls: Levels| {
+            format!(
+                "  {name:<7} {:>14}  (min {}, max {})",
+                format_amount(bal),
+                format_amount(lvls.min),
+                format_amount(lvls.max),
+            )
+        };
+        tracing::info!(
+            "Rebalancer state:\n{}\n{}\n{}\n{}\n{}",
+            row("CSPR", cspr, self.cfg.cspr),
+            row("WCSPR", wcspr, self.cfg.wcspr),
+            row("stCSPR", stcspr, self.cfg.stcspr),
+            row("Long", long, self.cfg.long),
+            row("Short", short, self.cfg.short),
+        );
         Ok(())
     }
 
@@ -302,13 +328,21 @@ impl<'a> Rebalancer<'a> {
         let lvls = self.cfg.levels(asset);
         if bal < lvls.min {
             let deficit = lvls.midpoint() - bal;
-            tracing::info!("Asset {asset:?} below min ({bal}); filling deficit {deficit}");
+            let formatted_bal = format_amount(bal);
+            let formatted_deficit = format_amount(deficit);
+            tracing::info!(
+                "Asset {asset:?} below min ({formatted_bal}); filling deficit {formatted_deficit}"
+            );
             self.fill(asset, deficit)?;
             return Ok(true);
         }
         if bal > lvls.max {
             let excess = bal - lvls.upper_target();
-            tracing::info!("Asset {asset:?} above max ({bal}); draining excess {excess}");
+            let formatted_bal = format_amount(bal);
+            let formatted_excess = format_amount(excess);
+            tracing::info!(
+                "Asset {asset:?} above max ({formatted_bal}); draining excess {formatted_excess}"
+            );
             self.drain(asset, excess)?;
             return Ok(true);
         }
@@ -517,6 +551,14 @@ impl<'a> Rebalancer<'a> {
         let floor = self.cfg.levels(asset).upper_target();
         Ok(bal.saturating_sub(floor))
     }
+}
+
+/// Render a 9-decimal motes value as `whole.ddd` (three decimal places).
+fn format_amount(motes: U256) -> String {
+    let one_token = U256::from(1_000_000_000u64);
+    let whole = motes / one_token;
+    let frac = (motes % one_token) / U256::from(1_000_000u64);
+    format!("{whole}.{:03}", frac.as_u64())
 }
 
 fn min_u256(a: U256, b: U256) -> U256 {
@@ -1042,7 +1084,12 @@ mod tests {
     #[test]
     fn claims_matured_unstake_and_clears_state() {
         let cfg = base_cfg();
-        let b = MockBalances::new();
+        let mut b = MockBalances::new();
+        b.expect_cspr().returning(|| Ok(u(20_000)));
+        b.expect_wcspr().returning(|| Ok(u(20_000)));
+        b.expect_stcspr().returning(|| Ok(u(20_000)));
+        b.expect_long().returning(|| Ok(u(2_000)));
+        b.expect_short().returning(|| Ok(u(150)));
         let rates = MockRates::new();
         let mut ops = MockOps::new();
         ops.expect_claim().times(1).returning(|| Ok(()));

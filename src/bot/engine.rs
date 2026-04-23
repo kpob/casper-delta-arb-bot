@@ -2,7 +2,7 @@ use odra::{casper_types::U256, prelude::Address};
 use odra_cli::scenario::Error;
 use tracing::instrument;
 
-use super::events::BotEvent;
+use super::events::{BotEvent, TradeScope};
 
 /// Implemented by the associated `PriceData` so the engine can render prices
 /// without each strategy having to forward a static hook.
@@ -19,6 +19,8 @@ pub trait Strategy {
 
     const NAME: &'static str;
     const MIN_PROFIT_CSPR: f64;
+    /// Which trade scope this strategy reacts to.
+    const TRADE_SCOPE: TradeScope;
 
     /// Optional pre-trade hook (e.g. claiming matured unstakes). Default: no-op.
     fn before_trade(&mut self) -> Result<(), Error> {
@@ -44,7 +46,6 @@ pub trait Strategy {
     /// Execute the swap on-chain and return the actual `(amount_in, amount_out)`.
     fn execute(
         &mut self,
-        data: Self::PriceData,
         path: Self::Path,
         amount_in: U256,
         amount_out: U256,
@@ -65,10 +66,17 @@ impl<S: Strategy> Engine<S> {
     #[instrument(skip(self), fields(strategy = S::NAME))]
     pub fn handle_event(&mut self, event: &BotEvent) -> Result<bool, Error> {
         match event {
-            BotEvent::TimerTick | BotEvent::TradeExecuted | BotEvent::PriceChanged => {
+            BotEvent::TimerTick => {
                 self.try_trade()?;
                 Ok(true)
             }
+            BotEvent::TradeExecuted(scope) | BotEvent::PriceChanged(scope)
+                if *scope == S::TRADE_SCOPE =>
+            {
+                self.try_trade()?;
+                Ok(true)
+            }
+            BotEvent::TradeExecuted(_) | BotEvent::PriceChanged(_) => Ok(true),
             BotEvent::Shutdown => {
                 tracing::info!("{}: shutdown event received", S::NAME);
                 Ok(false)
@@ -102,7 +110,7 @@ impl<S: Strategy> Engine<S> {
 
         let (actual_in, actual_out) =
             self.strategy
-                .execute(data, path, amount_in, amount_out, self.caller)?;
+                .execute(path, amount_in, amount_out, self.caller)?;
         let actual = S::cspr_profit(actual_in, actual_out, data, path);
         tracing::info!("{}: actual profit {:<10.4} CSPR", S::NAME, actual);
         Ok(())

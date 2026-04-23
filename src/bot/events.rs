@@ -48,16 +48,25 @@ impl ClientContext for BotConsumerContext {
 
 impl ConsumerContext for BotConsumerContext {}
 
+/// Identifies the strategy domain a trade event belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeScope {
+    /// Trade involving Casper Delta Long/Short position tokens.
+    Delta,
+    /// Trade involving the staked-CSPR / CSPR pool.
+    LiquidStaking,
+}
+
 /// Events that can trigger the bot's price-check-and-trade cycle.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum BotEvent {
     /// Periodic timer fired — check prices and trade if profitable.
     TimerTick,
-    /// A trade was executed on the DEX.
-    TradeExecuted,
-    /// A new price was observed for a token.
-    PriceChanged,
+    /// A trade was executed on the DEX within the given scope.
+    TradeExecuted(TradeScope),
+    /// A new price was observed within the given scope.
+    PriceChanged(TradeScope),
     /// Graceful shutdown requested.
     Shutdown,
 }
@@ -129,16 +138,16 @@ pub struct KafkaEventSource {
 }
 
 impl KafkaEventSource {
-    pub fn new(config: KafkaConfig, relevant_addresses: Vec<String>) -> Self {
+    pub fn new(config: KafkaConfig, scoped_addresses: Vec<(String, TradeScope)>) -> Self {
         let (tx, rx) = mpsc::channel();
-        Self::spawn_consumer(&config, relevant_addresses, tx.clone());
+        Self::spawn_consumer(&config, scoped_addresses, tx.clone());
         Self::spawn_timer(config.timer_fallback_secs, tx);
         Self { rx }
     }
 
     fn spawn_consumer(
         config: &KafkaConfig,
-        relevant_addresses: Vec<String>,
+        scoped_addresses: Vec<(String, TradeScope)>,
         tx: mpsc::Sender<BotEvent>,
     ) {
         let topics = vec![
@@ -180,16 +189,17 @@ impl KafkaEventSource {
                             payload.len()
                         );
 
-                        if let Some(event) = Self::message_to_event(
+                        let events = Self::messages_to_events(
                             topic,
                             payload,
                             &topic_price_changed,
                             &topic_trade_executed,
-                            &relevant_addresses,
-                        ) {
+                            &scoped_addresses,
+                        );
+                        for event in events {
                             tracing::info!("Kafka event received: {:?}", event);
                             if tx.send(event).is_err() {
-                                break;
+                                return;
                             }
                         }
                     }
@@ -212,47 +222,54 @@ impl KafkaEventSource {
         });
     }
 
-    fn message_to_event(
+    fn messages_to_events(
         topic: &str,
         payload: &[u8],
         topic_price_changed: &str,
         topic_trade_executed: &str,
-        relevant_addresses: &[String],
-    ) -> Option<BotEvent> {
+        scoped_addresses: &[(String, TradeScope)],
+    ) -> Vec<BotEvent> {
         if topic == topic_price_changed {
-            Some(BotEvent::PriceChanged)
+            vec![BotEvent::PriceChanged(TradeScope::Delta)]
         } else if topic == topic_trade_executed {
             match serde_json::from_slice::<Event>(payload) {
                 Ok(event) => {
-                    if Self::is_relevant_trade(&event.app_data, relevant_addresses) {
-                        Some(BotEvent::TradeExecuted)
-                    } else {
+                    let scopes = Self::matched_scopes(&event.app_data, scoped_addresses);
+                    tracing::debug!("{:?}", event.app_data);
+                    if scopes.is_empty() {
                         tracing::debug!(
-                            "Trade event ignored: path does not involve Long/Short tokens"
+                            "Trade event ignored: path does not involve tracked tokens"
                         );
-                        None
                     }
+                    scopes.into_iter().map(BotEvent::TradeExecuted).collect()
                 }
                 Err(e) => {
                     tracing::warn!("Failed to parse trade event payload: {}", e);
-                    None
+                    Vec::new()
                 }
             }
         } else {
             tracing::warn!("Received message on unknown topic: {}", topic);
-            None
+            Vec::new()
         }
     }
 
-    fn is_relevant_trade(app_data: &serde_json::Value, relevant_addresses: &[String]) -> bool {
+    fn matched_scopes(
+        app_data: &serde_json::Value,
+        scoped_addresses: &[(String, TradeScope)],
+    ) -> Vec<TradeScope> {
         let Some(path) = app_data["args"]["path"].as_array() else {
-            return false;
+            return Vec::new();
         };
-        path.iter().any(|addr| {
-            addr.as_str()
-                .map(|s| relevant_addresses.iter().any(|r| r == s))
-                .unwrap_or(false)
-        })
+        let mut scopes: Vec<TradeScope> = Vec::new();
+        for addr in path.iter().filter_map(|a| a.as_str()) {
+            for (tracked, scope) in scoped_addresses {
+                if tracked == addr && !scopes.contains(scope) {
+                    scopes.push(*scope);
+                }
+            }
+        }
+        scopes
     }
 }
 

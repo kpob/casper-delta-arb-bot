@@ -9,7 +9,6 @@ const DECIMAL_PLACES: u32 = 9;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PriceData {
-    pub trade_size_usd: f64,
     pub long_dex_rate: f64,
     pub short_dex_rate: f64,
     pub wcspr_price: f64,
@@ -47,7 +46,6 @@ impl PriceData {
             U256::from((trade_size_usd / wcspr_price) as u64) * 10u64.pow(DECIMAL_PLACES);
 
         Self {
-            trade_size_usd,
             long_dex_rate,
             short_dex_rate,
             wcspr_price,
@@ -88,13 +86,13 @@ impl crate::bot::engine::LogPrices for PriceData {
             short_diff = format!("{:+.2}%", self.short_diff_percent),
             "Price deviations from fair value"
         );
-        tracing::info!(
-            longs_per_trade_unit = self.longs_per_trade_unit.as_u64(),
-            shorts_per_trade_unit = self.shorts_per_trade_unit.as_u64(),
-            wcspr_per_trade_unit = self.wcspr_per_trade_unit.as_u64(),
-            "Token amounts traded per ${} of trade size",
-            self.trade_size_usd
-        );
+        // tracing::info!(
+        //     longs_per_trade_unit = self.longs_per_trade_unit.as_u64(),
+        //     shorts_per_trade_unit = self.shorts_per_trade_unit.as_u64(),
+        //     wcspr_per_trade_unit = self.wcspr_per_trade_unit.as_u64(),
+        //     "Token amounts traded per ${} of trade size",
+        //     self.trade_size_usd
+        // );
     }
 }
 
@@ -137,9 +135,9 @@ impl<'a> PriceCalculator<'a> {
         Ok(PriceData::new(
             long_dex_rate,
             short_dex_rate,
+            wcspr_price,
             long_protocol_price,
             short_protocol_price,
-            wcspr_price,
         ))
     }
 

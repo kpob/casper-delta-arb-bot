@@ -75,19 +75,12 @@ pub(super) struct LsPriceCalculator;
 impl LsPriceCalculator {
     /// Fetches DEX price, fair price, and WCSPR/USD price.
     pub(super) fn prices(contracts: &ContractRefs) -> Result<PriceData, Error> {
-        let trade_size_usd = std::env::var("BOT_STCSPR_TRADE_SIZE_USD")
-            .unwrap_or_else(|_| "1".to_string())
-            .parse::<f64>()
-            .expect("Invalid BOT_STCSPR_TRADE_SIZE_USD");
-
         // WCSPR USD price: reuse the same Market oracle as Casper Delta.
         let market = contracts.market()?;
         let state = market
             .try_get_address_market_state(market.address())?
             .market_state;
         let wcspr_price = state.price().as_u64() as f64 / 100_000.0;
-        let wcspr_in =
-            U256::from((trade_size_usd / wcspr_price) as u64 * 10u64.pow(DECIMAL_PLACES));
 
         // DEX price: WCSPR per sCSPR from the pair reserves.
         // Pair name is "WCSPR-StCSPR LP": token0 = WCSPR, token1 = sCSPR.
@@ -99,11 +92,7 @@ impl LsPriceCalculator {
         let supply: U256 = sc.total_supply();
 
         let fair_price = utils::calculate_price_u512(staked, supply);
-        let dex_price =
-            contracts
-                .router()?
-                .get_amount_out(wcspr_in, reserves_wcspr, reserves_stcspr);
-        let dex_price = utils::calculate_price(dex_price, 1.into());
+        let dex_price = utils::calculate_price(reserves_wcspr, reserves_stcspr);
 
         Ok(PriceData::new(dex_price, fair_price, wcspr_price))
     }

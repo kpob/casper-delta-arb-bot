@@ -9,7 +9,7 @@ use odra_cli::{
 use crate::bot::casper_delta::CasperDeltaSetup;
 use crate::contracts::ContractRefs;
 
-use self::events::{EventSource, KafkaConfig, KafkaEventSource};
+use self::events::{EventSource, KafkaConfig, KafkaEventSource, TradeScope};
 use self::rebalancer::RealRebalancer;
 
 mod casper_delta;
@@ -50,7 +50,7 @@ impl Scenario for Bot {
         let mut ls_engine = liquid_staking::build_engine(&contracts, env, caller, dry_run);
         let rebalancer = RealRebalancer::from_env(env, &contracts, dry_run);
         rebalancer.approve_all()?;
-        let mut event_source = self.setup_event_source(&contracts);
+        let mut event_source = self.setup_event_source(&contracts)?;
 
         while let Some(event) = event_source.next_event() {
             tracing::info!("Event: {:?}", event);
@@ -73,14 +73,17 @@ impl Scenario for Bot {
 }
 
 impl Bot {
-    fn setup_event_source(&self, contracts: &ContractRefs) -> impl EventSource {
+    fn setup_event_source(&self, contracts: &ContractRefs) -> Result<impl EventSource, Error> {
         let config = KafkaConfig::from_env();
         tracing::info!("Connecting to Kafka at {}", config.bootstrap_servers);
-        let relevant_addresses = vec![
-            contracts.long().unwrap().address().to_string(),
-            contracts.short().unwrap().address().to_string(),
-            contracts.staked_cspr().unwrap().address().to_string(),
+        let scoped_addresses = vec![
+            (contracts.long()?.address().to_string(), TradeScope::Delta),
+            (contracts.short()?.address().to_string(), TradeScope::Delta),
+            (
+                contracts.staked_cspr()?.address().to_string(),
+                TradeScope::LiquidStaking,
+            ),
         ];
-        KafkaEventSource::new(config, relevant_addresses)
+        Ok(KafkaEventSource::new(config, scoped_addresses))
     }
 }

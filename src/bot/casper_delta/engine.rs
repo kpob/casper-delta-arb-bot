@@ -8,6 +8,7 @@ use super::{
     trader::DeltaAssetManager,
 };
 use crate::bot::engine::{Engine, Strategy};
+use crate::bot::events::TradeScope;
 
 pub type CasperDeltaEngine<'a> = Engine<CasperDeltaStrategy<'a>>;
 
@@ -31,6 +32,7 @@ impl<'a> Strategy for CasperDeltaStrategy<'a> {
 
     const NAME: &'static str = "CasperDelta";
     const MIN_PROFIT_CSPR: f64 = 1.0;
+    const TRADE_SCOPE: TradeScope = TradeScope::Delta;
 
     fn fetch_prices(&self) -> Result<Self::PriceData, Error> {
         self.calc.price_data()
@@ -61,7 +63,6 @@ impl<'a> Strategy for CasperDeltaStrategy<'a> {
 
     fn execute(
         &mut self,
-        _data: Self::PriceData,
         path: Self::Path,
         amount_in: U256,
         amount_out: U256,

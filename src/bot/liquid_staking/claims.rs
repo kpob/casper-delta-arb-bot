@@ -43,12 +43,6 @@ impl PendingClaims {
         }
     }
 
-    /// Appends a claim and rewrites the file.
-    pub fn add(&mut self, claim: PendingClaim) -> Result<(), Error> {
-        self.claims.push(claim);
-        self.persist()
-    }
-
     /// Returns true if any claim's `claimable_from_ms` has passed.
     pub fn has_ready_claims(&self) -> bool {
         let now = now_ms();
@@ -103,22 +97,6 @@ mod tests {
     fn test_load_from_missing_file_returns_empty() {
         let claims = PendingClaims::load("/nonexistent/path/claims.json");
         assert_eq!(claims.claims.len(), 0);
-    }
-
-    #[test]
-    fn test_add_persists_to_file_and_reloads() {
-        let path = tmp_path();
-        let mut claims = PendingClaims::load(&path);
-        claims
-            .add(PendingClaim {
-                claimable_from_ms: 9_999_999_999_999,
-            })
-            .unwrap();
-
-        let reloaded = PendingClaims::load(&path);
-        assert_eq!(reloaded.claims.len(), 1);
-        assert_eq!(reloaded.claims[0].claimable_from_ms, 9_999_999_999_999);
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
