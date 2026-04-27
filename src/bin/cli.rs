@@ -22,6 +22,7 @@ pub fn main() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_level(true)
+        .json()
         .init();
     OdraCli::new()
         .about("Casper Delta CLI Tool")
