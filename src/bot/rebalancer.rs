@@ -32,7 +32,9 @@ use odra::prelude::{Address, Addressable};
 use odra::uints::ToU256;
 use odra_cli::{cspr, scenario::Error};
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
+use super::utils::motes_to_token;
 use crate::contracts::ContractRefs;
 
 #[cfg(test)]
@@ -279,6 +281,7 @@ impl<'a> Rebalancer<'a> {
     /// Inspect balances and perform at most one rebalancing step for the
     /// first imbalanced asset, in priority order. Should be called before any
     /// engine action on each event-loop tick.
+    #[instrument(skip_all)]
     pub fn rebalance(&self) -> Result<(), Error> {
         self.log_state()?;
         if self.try_claim_matured()? {
@@ -289,31 +292,24 @@ impl<'a> Rebalancer<'a> {
                 return Ok(());
             }
         }
+        tracing::info!("rebalance tick: no-op");
         Ok(())
     }
 
     fn log_state(&self) -> Result<(), Error> {
-        let cspr = self.balances.cspr()?;
-        let wcspr = self.balances.wcspr()?;
-        let stcspr = self.balances.stcspr()?;
-        let long = self.balances.long()?;
-        let short = self.balances.short()?;
-        let row = |name: &str, bal: U256, lvls: Levels| {
-            format!(
-                "  {name:<7} {:>14}  (min {}, max {})",
-                format_amount(bal),
-                format_amount(lvls.min),
-                format_amount(lvls.max),
-            )
-        };
-        tracing::info!(
-            "Rebalancer state:\n{}\n{}\n{}\n{}\n{}",
-            row("CSPR", cspr, self.cfg.cspr),
-            row("WCSPR", wcspr, self.cfg.wcspr),
-            row("stCSPR", stcspr, self.cfg.stcspr),
-            row("Long", long, self.cfg.long),
-            row("Short", short, self.cfg.short),
-        );
+        for asset in Asset::PRIORITY {
+            let bal = self.balance(asset)?;
+            let lvls = self.cfg.levels(asset);
+            tracing::info!(
+                asset = ?asset,
+                balance = motes_to_token(bal),
+                min = motes_to_token(lvls.min),
+                max = motes_to_token(lvls.max),
+                deficit = motes_to_token(lvls.min.saturating_sub(bal)),
+                headroom = motes_to_token(lvls.max.saturating_sub(bal)),
+                "asset balance"
+            );
+        }
         Ok(())
     }
 
@@ -325,15 +321,18 @@ impl<'a> Rebalancer<'a> {
         let elapsed = now.saturating_sub(pending.created_at_secs);
         if elapsed < UNSTAKE_MATURITY_SECS {
             tracing::info!(
-                "Pending unstake still maturing ({elapsed}s of {UNSTAKE_MATURITY_SECS}s)"
+                elapsed_secs = elapsed,
+                maturity_secs = UNSTAKE_MATURITY_SECS,
+                "pending unstake still maturing"
             );
             return Ok(false);
         }
-        tracing::info!("Claiming matured unstake");
+        tracing::info!("claiming matured unstake");
         if !self.dry_run {
             self.ops.claim()?;
         }
         self.state.clear()?;
+        tracing::info!(elapsed_secs = elapsed, "pending unstake cleared");
         Ok(true)
     }
 
@@ -347,6 +346,7 @@ impl<'a> Rebalancer<'a> {
         }
     }
 
+    #[instrument(skip(self), fields(asset = ?asset))]
     fn try_rebalance_asset(&self, asset: Asset) -> Result<bool, Error> {
         let bal = self.balance(asset)?;
         let lvls = self.cfg.levels(asset);
@@ -355,20 +355,20 @@ impl<'a> Rebalancer<'a> {
         let drain_trigger = lvls.max + margin;
         if bal < fill_trigger {
             let deficit = lvls.midpoint() - bal;
-            let formatted_bal = format_amount(bal);
-            let formatted_deficit = format_amount(deficit);
             tracing::info!(
-                "Asset {asset:?} below min ({formatted_bal}); filling deficit {formatted_deficit}"
+                balance = motes_to_token(bal),
+                deficit = motes_to_token(deficit),
+                "below min, filling"
             );
             self.fill(asset, deficit)?;
             return Ok(true);
         }
         if bal > drain_trigger {
             let excess = bal - lvls.midpoint();
-            let formatted_bal = format_amount(bal);
-            let formatted_excess = format_amount(excess);
             tracing::info!(
-                "Asset {asset:?} above max ({formatted_bal}); draining excess {formatted_excess}"
+                balance = motes_to_token(bal),
+                excess = motes_to_token(excess),
+                "above max, draining"
             );
             self.drain(asset, excess)?;
             return Ok(true);
@@ -378,6 +378,7 @@ impl<'a> Rebalancer<'a> {
 
     // ---- Fill -------------------------------------------------------------
 
+    #[instrument(skip(self), fields(asset = ?asset))]
     fn fill(&self, asset: Asset, deficit: U256) -> Result<(), Error> {
         match asset {
             Asset::Cspr => self.fill_cspr(deficit),
@@ -415,7 +416,10 @@ impl<'a> Rebalancer<'a> {
             }
             match src {
                 Asset::Wcspr => {
-                    tracing::info!("Unwrapping {take_cspr} WCSPR for CSPR");
+                    tracing::info!(
+                        amount = motes_to_token(take_cspr),
+                        "unwrapping WCSPR for CSPR"
+                    );
                     if !self.dry_run {
                         self.ops.unwrap(take_cspr)?;
                     }
@@ -424,7 +428,7 @@ impl<'a> Rebalancer<'a> {
                 Asset::StCspr => {
                     if self.state.load()?.is_some() {
                         tracing::warn!(
-                            "Cannot unstake while a prior unstake is pending; deferring"
+                            "cannot unstake while a prior unstake is pending; deferring"
                         );
                         break;
                     }
@@ -432,13 +436,23 @@ impl<'a> Rebalancer<'a> {
                     if stcspr_amount.is_zero() {
                         continue;
                     }
-                    tracing::info!("Unstaking {stcspr_amount} stCSPR (~{take_cspr} CSPR)");
+                    tracing::info!(
+                        stcspr = motes_to_token(stcspr_amount),
+                        cspr = motes_to_token(take_cspr),
+                        "unstaking stCSPR"
+                    );
                     if !self.dry_run {
                         self.ops.unstake(stcspr_amount)?;
                     }
+                    let now = self.clock.now_secs();
                     self.state.save(&PendingUnstake {
-                        created_at_secs: self.clock.now_secs(),
+                        created_at_secs: now,
                     })?;
+                    tracing::info!(
+                        created_at_secs = now,
+                        source = "fill_cspr",
+                        "pending unstake recorded"
+                    );
                     remaining = remaining.saturating_sub(take_cspr);
                 }
                 _ => unreachable!(),
@@ -454,10 +468,10 @@ impl<'a> Rebalancer<'a> {
         let avail = self.spendable(Asset::Cspr)?;
         let amount = min_u256(avail, deficit);
         if amount.is_zero() {
-            tracing::warn!("Cannot fill WCSPR: CSPR source below floor");
+            tracing::warn!("cannot fill WCSPR: CSPR source below floor");
             return Ok(());
         }
-        tracing::info!("Wrapping {amount} CSPR → WCSPR");
+        tracing::info!(amount = motes_to_token(amount), "wrapping CSPR → WCSPR");
         if !self.dry_run {
             self.ops.wrap(amount)?;
         }
@@ -470,10 +484,13 @@ impl<'a> Rebalancer<'a> {
         let cspr_needed = self.rates.stcspr_to_cspr(stcspr_deficit)?;
         let cspr_amount = min_u256(cspr_avail, cspr_needed);
         if cspr_amount.is_zero() {
-            tracing::warn!("Cannot fill stCSPR: CSPR source below floor");
+            tracing::warn!("cannot fill stCSPR: CSPR source below floor");
             return Ok(());
         }
-        tracing::info!("Staking {cspr_amount} CSPR → stCSPR");
+        tracing::info!(
+            amount = motes_to_token(cspr_amount),
+            "staking CSPR → stCSPR"
+        );
         if !self.dry_run {
             self.ops.stake(cspr_amount)?;
         }
@@ -490,10 +507,13 @@ impl<'a> Rebalancer<'a> {
         };
         let wcspr_spend = min_u256(wcspr_avail, wcspr_needed);
         if wcspr_spend.is_zero() {
-            tracing::warn!("Cannot fill {asset:?}: WCSPR source below floor");
+            tracing::warn!("cannot fill: WCSPR source below floor");
             return Ok(());
         }
-        tracing::info!("Buying {asset:?} with {wcspr_spend} WCSPR");
+        tracing::info!(
+            wcspr = motes_to_token(wcspr_spend),
+            "buying position with WCSPR"
+        );
         if !self.dry_run {
             match asset {
                 Asset::Long => self.ops.buy_long(wcspr_spend)?,
@@ -506,11 +526,12 @@ impl<'a> Rebalancer<'a> {
 
     // ---- Drain ------------------------------------------------------------
 
+    #[instrument(skip(self), fields(asset = ?asset))]
     fn drain(&self, asset: Asset, excess: U256) -> Result<(), Error> {
         match asset {
             Asset::Cspr => self.drain_cspr(excess),
             Asset::Wcspr => {
-                tracing::info!("Unwrapping {excess} WCSPR → CSPR");
+                tracing::info!(amount = motes_to_token(excess), "unwrapping WCSPR → CSPR");
                 if !self.dry_run {
                     self.ops.unwrap(excess)?;
                 }
@@ -518,14 +539,14 @@ impl<'a> Rebalancer<'a> {
             }
             Asset::StCspr => self.drain_stcspr(excess),
             Asset::Long => {
-                tracing::info!("Selling {excess} long");
+                tracing::info!(amount = motes_to_token(excess), "selling long");
                 if !self.dry_run {
                     self.ops.sell_long(excess)?;
                 }
                 Ok(())
             }
             Asset::Short => {
-                tracing::info!("Selling {excess} short");
+                tracing::info!(amount = motes_to_token(excess), "selling short");
                 if !self.dry_run {
                     self.ops.sell_short(excess)?;
                 }
@@ -542,7 +563,7 @@ impl<'a> Rebalancer<'a> {
         let wcspr_headroom = self.cfg.wcspr.max.saturating_sub(wcspr_bal);
         if !wcspr_headroom.is_zero() {
             let amount = min_u256(excess, wcspr_headroom);
-            tracing::info!("Wrapping {amount} CSPR → WCSPR");
+            tracing::info!(amount = motes_to_token(amount), "wrapping CSPR → WCSPR");
             if !self.dry_run {
                 self.ops.wrap(amount)?;
             }
@@ -553,29 +574,38 @@ impl<'a> Rebalancer<'a> {
         let stcspr_headroom_cspr = self.rates.stcspr_to_cspr(stcspr_headroom)?;
         if !stcspr_headroom_cspr.is_zero() {
             let amount = min_u256(excess, stcspr_headroom_cspr);
-            tracing::info!("Staking {amount} CSPR → stCSPR");
+            tracing::info!(amount = motes_to_token(amount), "staking CSPR → stCSPR");
             if !self.dry_run {
                 self.ops.stake(amount)?;
             }
             return Ok(());
         }
-        tracing::warn!("Cannot drain CSPR: both WCSPR and stCSPR at/above max");
+        tracing::warn!("cannot drain CSPR: both WCSPR and stCSPR at/above max");
         Ok(())
     }
 
     /// Drain excess stCSPR by unstaking (async, single-slot).
     fn drain_stcspr(&self, excess_stcspr: U256) -> Result<(), Error> {
         if self.state.load()?.is_some() {
-            tracing::warn!("Cannot unstake excess stCSPR: prior unstake pending");
+            tracing::warn!("cannot unstake excess stCSPR: prior unstake pending");
             return Ok(());
         }
-        tracing::info!("Unstaking {excess_stcspr} stCSPR");
+        tracing::info!(
+            stcspr = motes_to_token(excess_stcspr),
+            "unstaking excess stCSPR"
+        );
         if !self.dry_run {
             self.ops.unstake(excess_stcspr)?;
         }
+        let now = self.clock.now_secs();
         self.state.save(&PendingUnstake {
-            created_at_secs: self.clock.now_secs(),
+            created_at_secs: now,
         })?;
+        tracing::info!(
+            created_at_secs = now,
+            source = "drain_stcspr",
+            "pending unstake recorded"
+        );
         Ok(())
     }
 
@@ -588,14 +618,6 @@ impl<'a> Rebalancer<'a> {
         let floor = self.cfg.levels(asset).spend_floor();
         Ok(bal.saturating_sub(floor))
     }
-}
-
-/// Render a 9-decimal motes value as `whole.ddd` (three decimal places).
-fn format_amount(motes: U256) -> String {
-    let one_token = U256::from(1_000_000_000u64);
-    let whole = motes / one_token;
-    let frac = (motes % one_token) / U256::from(1_000_000u64);
-    format!("{whole}.{:03}", frac.as_u64())
 }
 
 fn min_u256(a: U256, b: U256) -> U256 {
@@ -727,59 +749,133 @@ impl<'a> RealOps<'a> {
 
 impl Ops for RealOps<'_> {
     fn wrap(&self, cspr_amount: U256) -> Result<(), Error> {
-        self.set_gas();
         let amount = U512::from(cspr_amount.as_u128());
         self.env.set_gas(cspr!(3));
-        self.refs.wcspr()?.with_tokens(amount).try_deposit()?;
+        tracing::info!(
+            op = "wrap",
+            amount = motes_to_token(cspr_amount),
+            gas_cspr = 3,
+            "calling on-chain"
+        );
+        self.refs
+            .wcspr()?
+            .with_tokens(amount)
+            .try_deposit()
+            .inspect_err(|e| {
+                tracing::error!(op = "wrap", amount = motes_to_token(cspr_amount), error = ?e, "wcspr deposit failed");
+            })?;
         Ok(())
     }
 
     fn unwrap(&self, wcspr_amount: U256) -> Result<(), Error> {
         self.set_gas();
-        self.refs.wcspr()?.try_withdraw(&wcspr_amount)?;
+        tracing::info!(
+            op = "unwrap",
+            amount = motes_to_token(wcspr_amount),
+            gas_cspr = 4,
+            "calling on-chain"
+        );
+        self.refs.wcspr()?.try_withdraw(&wcspr_amount).inspect_err(|e| {
+            tracing::error!(op = "unwrap", amount = motes_to_token(wcspr_amount), error = ?e, "wcspr withdraw failed");
+        })?;
         Ok(())
     }
 
     fn stake(&self, cspr_amount: U256) -> Result<(), Error> {
         self.env.set_gas(cspr!(9));
         let amount = U512::from(cspr_amount.as_u128());
-        self.refs.staked_cspr()?.with_tokens(amount).try_stake()?;
+        tracing::info!(
+            op = "stake",
+            amount = motes_to_token(cspr_amount),
+            gas_cspr = 9,
+            "calling on-chain"
+        );
+        self.refs
+            .staked_cspr()?
+            .with_tokens(amount)
+            .try_stake()
+            .inspect_err(|e| {
+                tracing::error!(op = "stake", amount = motes_to_token(cspr_amount), error = ?e, "stake failed");
+            })?;
         Ok(())
     }
 
     fn unstake(&self, stcspr_amount: U256) -> Result<(), Error> {
         self.env.set_gas(cspr!(8));
-        self.refs.staked_cspr()?.try_unstake(stcspr_amount)?;
+        tracing::info!(
+            op = "unstake",
+            amount = motes_to_token(stcspr_amount),
+            gas_cspr = 8,
+            "calling on-chain"
+        );
+        self.refs.staked_cspr()?.try_unstake(stcspr_amount).inspect_err(|e| {
+            tracing::error!(op = "unstake", amount = motes_to_token(stcspr_amount), error = ?e, "unstake failed");
+        })?;
         Ok(())
     }
 
     fn claim(&self) -> Result<(), Error> {
         self.env.set_gas(cspr!(8));
-        self.refs.staked_cspr()?.try_claim()?;
+        tracing::info!(op = "claim", gas_cspr = 8, "calling on-chain");
+        self.refs.staked_cspr()?.try_claim().inspect_err(|e| {
+            tracing::error!(op = "claim", error = ?e, "claim failed");
+        })?;
         Ok(())
     }
 
     fn buy_long(&self, wcspr_amount: U256) -> Result<(), Error> {
         self.set_gas();
-        self.refs.market()?.try_deposit_long(wcspr_amount)?;
+        tracing::info!(
+            op = "buy_long",
+            amount = motes_to_token(wcspr_amount),
+            gas_cspr = 4,
+            "calling on-chain"
+        );
+        self.refs.market()?.try_deposit_long(wcspr_amount).inspect_err(|e| {
+            tracing::error!(op = "buy_long", amount = motes_to_token(wcspr_amount), error = ?e, "deposit_long failed");
+        })?;
         Ok(())
     }
 
     fn sell_long(&self, long_amount: U256) -> Result<(), Error> {
         self.set_gas();
-        self.refs.market()?.try_withdraw_long(long_amount)?;
+        tracing::info!(
+            op = "sell_long",
+            amount = motes_to_token(long_amount),
+            gas_cspr = 4,
+            "calling on-chain"
+        );
+        self.refs.market()?.try_withdraw_long(long_amount).inspect_err(|e| {
+            tracing::error!(op = "sell_long", amount = motes_to_token(long_amount), error = ?e, "withdraw_long failed");
+        })?;
         Ok(())
     }
 
     fn buy_short(&self, wcspr_amount: U256) -> Result<(), Error> {
         self.set_gas();
-        self.refs.market()?.try_deposit_short(wcspr_amount)?;
+        tracing::info!(
+            op = "buy_short",
+            amount = motes_to_token(wcspr_amount),
+            gas_cspr = 4,
+            "calling on-chain"
+        );
+        self.refs.market()?.try_deposit_short(wcspr_amount).inspect_err(|e| {
+            tracing::error!(op = "buy_short", amount = motes_to_token(wcspr_amount), error = ?e, "deposit_short failed");
+        })?;
         Ok(())
     }
 
     fn sell_short(&self, short_amount: U256) -> Result<(), Error> {
         self.set_gas();
-        self.refs.market()?.try_withdraw_short(short_amount)?;
+        tracing::info!(
+            op = "sell_short",
+            amount = motes_to_token(short_amount),
+            gas_cspr = 4,
+            "calling on-chain"
+        );
+        self.refs.market()?.try_withdraw_short(short_amount).inspect_err(|e| {
+            tracing::error!(op = "sell_short", amount = motes_to_token(short_amount), error = ?e, "withdraw_short failed");
+        })?;
         Ok(())
     }
 
@@ -804,6 +900,12 @@ impl Ops for RealOps<'_> {
         self.env.set_gas(cspr!(4));
         let market_addr = self.refs.market()?.address();
         let cspr_trade = self.refs.router()?.address();
+        tracing::info!(
+            op = "approve_max",
+            ?approval,
+            gas_cspr = 4,
+            "calling on-chain"
+        );
         match approval {
             Approval::WcsprMarket => {
                 self.refs.wcspr()?.approve(&market_addr, &U256::MAX);
@@ -844,28 +946,43 @@ impl StateStore for FileStateStore {
         if !self.path().exists() {
             return Ok(None);
         }
-        let raw = fs::read_to_string(self.path()).map_err(|e| Error::OdraError {
-            message: format!("read {:?}: {e}", self.path()),
+        let raw = fs::read_to_string(self.path()).map_err(|e| {
+            tracing::error!(op = "state.load", path = %self.path().display(), error = ?e, "read failed");
+            Error::OdraError {
+                message: format!("read {:?}: {e}", self.path()),
+            }
         })?;
-        let p: PendingUnstake = serde_json::from_str(&raw).map_err(|e| Error::OdraError {
-            message: format!("parse {:?}: {e}", self.path()),
+        let p: PendingUnstake = serde_json::from_str(&raw).map_err(|e| {
+            tracing::error!(op = "state.load", path = %self.path().display(), error = ?e, "parse failed");
+            Error::OdraError {
+                message: format!("parse {:?}: {e}", self.path()),
+            }
         })?;
         Ok(Some(p))
     }
 
     fn save(&self, pending: &PendingUnstake) -> Result<(), Error> {
-        let raw = serde_json::to_string(pending).map_err(|e| Error::OdraError {
-            message: format!("serialize pending: {e}"),
+        let raw = serde_json::to_string(pending).map_err(|e| {
+            tracing::error!(op = "state.save", error = ?e, "serialize failed");
+            Error::OdraError {
+                message: format!("serialize pending: {e}"),
+            }
         })?;
-        fs::write(self.path(), raw).map_err(|e| Error::OdraError {
-            message: format!("write {:?}: {e}", self.path()),
+        fs::write(self.path(), raw).map_err(|e| {
+            tracing::error!(op = "state.save", path = %self.path().display(), error = ?e, "write failed");
+            Error::OdraError {
+                message: format!("write {:?}: {e}", self.path()),
+            }
         })
     }
 
     fn clear(&self) -> Result<(), Error> {
         if self.path().exists() {
-            fs::remove_file(self.path()).map_err(|e| Error::OdraError {
-                message: format!("remove {:?}: {e}", self.path()),
+            fs::remove_file(self.path()).map_err(|e| {
+                tracing::error!(op = "state.clear", path = %self.path().display(), error = ?e, "remove failed");
+                Error::OdraError {
+                    message: format!("remove {:?}: {e}", self.path()),
+                }
             })?;
         }
         Ok(())
@@ -1358,7 +1475,7 @@ mod tests {
     fn deadband_suppresses_small_excursions_past_max() {
         let mut cfg = base_cfg();
         cfg.deadband_bps = 500; // 5% of band width = 1_000 on a 20k-wide CSPR band.
-        // CSPR=30_500, just 500 past the 30k max — within hysteresis margin, no drain.
+                                // CSPR=30_500, just 500 past the 30k max — within hysteresis margin, no drain.
         let mut b = MockBalances::new();
         b.expect_cspr().returning(|| Ok(u(30_500)));
         b.expect_wcspr().returning(|| Ok(u(20_000)));
@@ -1379,8 +1496,8 @@ mod tests {
     fn deadband_still_triggers_when_excursion_exceeds_margin() {
         let mut cfg = base_cfg();
         cfg.deadband_bps = 500; // margin = 1_000 on CSPR band.
-        // CSPR=31_500 → 1_500 past max, exceeds margin → drain.
-        // Excess to midpoint = 31_500 - 20_000 = 11_500, capped by WCSPR headroom 10_000.
+                                // CSPR=31_500 → 1_500 past max, exceeds margin → drain.
+                                // Excess to midpoint = 31_500 - 20_000 = 11_500, capped by WCSPR headroom 10_000.
         let mut b = MockBalances::new();
         b.expect_cspr().returning(|| Ok(u(31_500)));
         b.expect_wcspr().returning(|| Ok(u(20_000)));

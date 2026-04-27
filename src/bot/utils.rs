@@ -13,3 +13,13 @@ pub(super) fn calculate_price_u512(amount0: U512, amount1: U256) -> f64 {
     let scaled = amount0 * U512::from(1_000_000u64) / amount1.to_u512();
     scaled.as_u64() as f64 / 1_000_000.0
 }
+
+/// Convert 9-decimal token motes to a whole-token f64 rounded to 2 decimals,
+/// for human-readable structured log fields.
+pub(super) fn motes_to_token(motes: U256) -> f64 {
+    round_2dp(motes.as_u64() as f64 / 1_000_000_000.0)
+}
+
+pub(super) fn round_2dp(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}

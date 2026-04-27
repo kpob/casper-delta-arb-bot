@@ -82,17 +82,10 @@ impl crate::bot::engine::LogPrices for PriceData {
             "DEX prices (CSPR)"
         );
         tracing::info!(
-            long_diff = format!("{:+.2}%", self.long_diff_percent),
-            short_diff = format!("{:+.2}%", self.short_diff_percent),
+            long_diff_pct = self.long_diff_percent,
+            short_diff_pct = self.short_diff_percent,
             "Price deviations from fair value"
         );
-        // tracing::info!(
-        //     longs_per_trade_unit = self.longs_per_trade_unit.as_u64(),
-        //     shorts_per_trade_unit = self.shorts_per_trade_unit.as_u64(),
-        //     wcspr_per_trade_unit = self.wcspr_per_trade_unit.as_u64(),
-        //     "Token amounts traded per ${} of trade size",
-        //     self.trade_size_usd
-        // );
     }
 }
 
@@ -148,12 +141,20 @@ impl<'a> PriceCalculator<'a> {
             .contracts
             .router()?
             .try_get_amounts_out(amount_in, address_path)
-            .map_err(|e| Error::OdraError {
-                message: format!("Failed to get amounts out: {:?}", e),
+            .map_err(|e| {
+                tracing::error!(op = "delta.get_amounts_out", ?path, amount_in_motes = amount_in.as_u64(), error = ?e, "router quote failed");
+                Error::OdraError {
+                    message: format!("Failed to get amounts out: {:?}", e),
+                }
             })?;
         if let [amount_in, .., amount_out] = amounts.as_slice() {
             Ok(vec![*amount_in, *amount_out])
         } else {
+            tracing::error!(
+                ?path,
+                len = amounts.len(),
+                "router returned unexpected amounts shape"
+            );
             Err(Error::OdraError {
                 message: "Invalid swap result".to_string(),
             })
@@ -178,7 +179,10 @@ impl<'a> PriceCalculator<'a> {
     fn protocol_prices(&self) -> Result<(f64, f64, f64), Error> {
         let market = self.contracts.market()?;
         let state = market
-            .try_get_address_market_state(market.address())?
+            .try_get_address_market_state(market.address())
+            .inspect_err(|e| {
+                tracing::error!(op = "delta.market_state", error = ?e, "fetch market state failed");
+            })?
             .market_state;
         let long_price = utils::calculate_price(state.long_liquidity, state.long_total_supply);
         let short_price = utils::calculate_price(state.short_liquidity, state.short_total_supply);

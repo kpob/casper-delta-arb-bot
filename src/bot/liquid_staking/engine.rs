@@ -7,6 +7,7 @@ use super::path::Path;
 use super::price::{LsPriceCalculator, PriceData};
 use crate::bot::engine::{Engine, Strategy};
 use crate::bot::events::TradeScope;
+use crate::bot::utils::motes_to_token;
 use crate::contracts::ContractRefs;
 
 const CLAIMS_FILE: &str = "pending_claims.json";
@@ -50,8 +51,12 @@ impl<'a> Strategy for LsStrategy<'a> {
         }
         tracing::info!("Claiming matured unstakes...");
         self.env.set_gas(cspr!(5));
-        self.refs.staked_cspr()?.try_claim()?;
-        self.claims.remove_ready()?;
+        self.refs.staked_cspr()?.try_claim().inspect_err(|e| {
+            tracing::error!(op = "ls.claim", error = ?e, "claim failed");
+        })?;
+        self.claims.remove_ready().inspect_err(|e| {
+            tracing::error!(op = "ls.claims.remove_ready", error = ?e, "claims persist failed");
+        })?;
         tracing::info!("Claim complete");
         Ok(())
     }
@@ -71,14 +76,24 @@ impl<'a> Strategy for LsStrategy<'a> {
             .refs
             .router()?
             .try_get_amounts_out(amount_in, dex_path)
-            .map_err(|e| Error::OdraError {
-                message: format!("get_amounts_out failed: {e:?}"),
+            .map_err(|e| {
+                tracing::error!(op = "ls.get_amounts_out", ?path, amount_in_motes = amount_in.as_u64(), error = ?e, "router quote failed");
+                Error::OdraError {
+                    message: format!("get_amounts_out failed: {e:?}"),
+                }
             })?;
         match amounts.as_slice() {
             [a_in, .., a_out] => Ok((*a_in, *a_out)),
-            _ => Err(Error::OdraError {
-                message: "Invalid LS swap amounts".to_string(),
-            }),
+            _ => {
+                tracing::error!(
+                    ?path,
+                    len = amounts.len(),
+                    "router returned unexpected amounts shape"
+                );
+                Err(Error::OdraError {
+                    message: "Invalid LS swap amounts".to_string(),
+                })
+            }
         }
     }
 
@@ -99,14 +114,6 @@ impl<'a> Strategy for LsStrategy<'a> {
         amount_out: U256,
         caller: Address,
     ) -> Result<(U256, U256), Error> {
-        // match path {
-        //     Path::StCsprCspr => {
-        //         // let cspr_to_stake_motes = (amount_in.as_u64() as f64 * data.protocol_price) as u64;
-        //         self.execute_sell_stcspr(amount_in, amount_out, caller)
-        //     }
-        //     Path::CsprStCspr => self.execute_buy_stcspr(amount_in, amount_out, caller),
-        // }
-
         if self.dry_run {
             tracing::info!("Dry run — buy_and_unstake skipped");
             return Ok((amount_in, amount_out));
@@ -114,6 +121,15 @@ impl<'a> Strategy for LsStrategy<'a> {
 
         self.env.set_gas(cspr!(8));
         let dex_path = path.build(&self.refs)?;
+        tracing::info!(
+            op = "ls.swap",
+            ?path,
+            amount_in_max = motes_to_token(amount_in),
+            amount_out = motes_to_token(amount_out),
+            gas_cspr = 8,
+            recipient = ?caller,
+            "calling on-chain"
+        );
         let amounts = self.refs.router()?.swap_tokens_for_exact_tokens(
             amount_out,
             amount_in,
@@ -122,10 +138,27 @@ impl<'a> Strategy for LsStrategy<'a> {
             u64::MAX,
         );
         match amounts.as_slice() {
-            [amount_in, .., amount_out] => Ok((*amount_in, *amount_out)),
-            _ => Err(Error::OdraError {
-                message: "Invalid swap result".to_string(),
-            }),
+            [first, .., last] => {
+                tracing::info!(
+                    op = "ls.swap",
+                    ?path,
+                    actual_in = motes_to_token(*first),
+                    actual_out = motes_to_token(*last),
+                    hops = amounts.len(),
+                    "swap returned"
+                );
+                Ok((*first, *last))
+            }
+            _ => {
+                tracing::error!(
+                    ?path,
+                    len = amounts.len(),
+                    "swap returned unexpected amounts shape"
+                );
+                Err(Error::OdraError {
+                    message: "Invalid swap result".to_string(),
+                })
+            }
         }
     }
 }

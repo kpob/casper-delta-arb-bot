@@ -53,7 +53,13 @@ impl Scenario for Bot {
         let mut event_source = self.setup_event_source(&contracts)?;
 
         while let Some(event) = event_source.next_event() {
-            tracing::info!("Event: {:?}", event);
+            let span = tracing::info_span!(
+                "event",
+                kind = event.kind(),
+                tx_hash = event.tx_hash().unwrap_or("-"),
+            );
+            let _enter = span.enter();
+            tracing::info!("event received");
             if let Err(e) = rebalancer.rebalance() {
                 tracing::error!("Rebalancer error: {:?}", e);
             }
@@ -68,6 +74,7 @@ impl Scenario for Bot {
                 Err(e) => tracing::error!("LS engine error: {:?}", e),
             }
         }
+        tracing::info!("event source closed; shutting down");
         Ok(())
     }
 }

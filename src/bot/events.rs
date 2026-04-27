@@ -64,11 +64,37 @@ pub enum BotEvent {
     /// Periodic timer fired — check prices and trade if profitable.
     TimerTick,
     /// A trade was executed on the DEX within the given scope.
-    TradeExecuted(TradeScope),
+    TradeExecuted {
+        scope: TradeScope,
+        tx_hash: Option<String>,
+    },
     /// A new price was observed within the given scope.
-    PriceChanged(TradeScope),
+    PriceChanged {
+        scope: TradeScope,
+        tx_hash: Option<String>,
+    },
     /// Graceful shutdown requested.
     Shutdown,
+}
+
+impl BotEvent {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            BotEvent::TimerTick => "timer",
+            BotEvent::TradeExecuted { .. } => "trade",
+            BotEvent::PriceChanged { .. } => "price",
+            BotEvent::Shutdown => "shutdown",
+        }
+    }
+
+    pub fn tx_hash(&self) -> Option<&str> {
+        match self {
+            BotEvent::TradeExecuted { tx_hash, .. } | BotEvent::PriceChanged { tx_hash, .. } => {
+                tx_hash.as_deref()
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A source of events for the bot.
@@ -165,11 +191,25 @@ impl KafkaEventSource {
                 .set("auto.offset.reset", "latest")
                 .set("enable.auto.commit", "true")
                 .create_with_context(BotConsumerContext)
+                .inspect_err(|e| {
+                    tracing::error!(
+                        bootstrap_servers = %bootstrap_servers,
+                        error = ?e,
+                        "Kafka consumer creation failed"
+                    );
+                })
                 .expect("Failed to create Kafka consumer");
 
             let topic_refs: Vec<&str> = topics.iter().map(String::as_str).collect();
             consumer
                 .subscribe(&topic_refs)
+                .inspect_err(|e| {
+                    tracing::error!(
+                        topics = ?topics,
+                        error = ?e,
+                        "Kafka subscribe failed"
+                    );
+                })
                 .expect("Failed to subscribe to Kafka topics");
 
             tracing::info!(
@@ -199,6 +239,7 @@ impl KafkaEventSource {
                         for event in events {
                             tracing::info!("Kafka event received: {:?}", event);
                             if tx.send(event).is_err() {
+                                tracing::info!("Kafka consumer thread exiting: channel closed");
                                 return;
                             }
                         }
@@ -217,6 +258,7 @@ impl KafkaEventSource {
             sleep(Duration::from_secs(fallback_secs));
             tracing::info!("Timer fallback tick ({}s)", fallback_secs);
             if tx.send(BotEvent::TimerTick).is_err() {
+                tracing::info!("Timer thread exiting: channel closed");
                 break;
             }
         });
@@ -230,18 +272,34 @@ impl KafkaEventSource {
         scoped_addresses: &[(String, TradeScope)],
     ) -> Vec<BotEvent> {
         if topic == topic_price_changed {
-            vec![BotEvent::PriceChanged(TradeScope::Delta)]
+            let tx_hash = parse_event_meta(payload);
+            vec![BotEvent::PriceChanged {
+                scope: TradeScope::Delta,
+                tx_hash,
+            }]
         } else if topic == topic_trade_executed {
             match serde_json::from_slice::<Event>(payload) {
                 Ok(event) => {
                     let scopes = Self::matched_scopes(&event.app_data, scoped_addresses);
                     tracing::debug!("{:?}", event.app_data);
                     if scopes.is_empty() {
-                        tracing::debug!(
-                            "Trade event ignored: path does not involve tracked tokens"
+                        let path: Vec<&str> = event.app_data["args"]["path"]
+                            .as_array()
+                            .map(|arr| arr.iter().filter_map(|v| v.as_str()).take(8).collect())
+                            .unwrap_or_default();
+                        tracing::info!(
+                            tx_hash = %event.tx_hash,
+                            path = ?path,
+                            "trade event ignored: path does not involve tracked tokens"
                         );
                     }
-                    scopes.into_iter().map(BotEvent::TradeExecuted).collect()
+                    scopes
+                        .into_iter()
+                        .map(|scope| BotEvent::TradeExecuted {
+                            scope,
+                            tx_hash: Some(event.tx_hash.clone()),
+                        })
+                        .collect()
                 }
                 Err(e) => {
                     tracing::warn!("Failed to parse trade event payload: {}", e);
@@ -277,4 +335,10 @@ impl EventSource for KafkaEventSource {
     fn next_event(&mut self) -> Option<BotEvent> {
         self.rx.recv().ok()
     }
+}
+
+fn parse_event_meta(payload: &[u8]) -> Option<String> {
+    serde_json::from_slice::<Event>(payload)
+        .ok()
+        .map(|e| e.tx_hash)
 }

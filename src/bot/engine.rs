@@ -3,6 +3,7 @@ use odra_cli::scenario::Error;
 use tracing::instrument;
 
 use super::events::{BotEvent, TradeScope};
+use super::utils::round_2dp;
 
 /// Implemented by the associated `PriceData` so the engine can render prices
 /// without each strategy having to forward a static hook.
@@ -63,20 +64,19 @@ impl<S: Strategy> Engine<S> {
         Self { strategy, caller }
     }
 
-    #[instrument(skip(self), fields(strategy = S::NAME))]
     pub fn handle_event(&mut self, event: &BotEvent) -> Result<bool, Error> {
         match event {
             BotEvent::TimerTick => {
                 self.try_trade()?;
                 Ok(true)
             }
-            BotEvent::TradeExecuted(scope) | BotEvent::PriceChanged(scope)
+            BotEvent::TradeExecuted { scope, .. } | BotEvent::PriceChanged { scope, .. }
                 if *scope == S::TRADE_SCOPE =>
             {
                 self.try_trade()?;
                 Ok(true)
             }
-            BotEvent::TradeExecuted(_) | BotEvent::PriceChanged(_) => Ok(true),
+            BotEvent::TradeExecuted { .. } | BotEvent::PriceChanged { .. } => Ok(true),
             BotEvent::Shutdown => {
                 tracing::info!("{}: shutdown event received", S::NAME);
                 Ok(false)
@@ -84,35 +84,60 @@ impl<S: Strategy> Engine<S> {
         }
     }
 
+    #[instrument(skip(self), fields(strategy = S::NAME))]
     fn try_trade(&mut self) -> Result<(), Error> {
-        self.strategy.before_trade()?;
+        self.strategy.before_trade().inspect_err(|e| {
+            tracing::error!(stage = "before_trade", error = ?e, "strategy step failed");
+        })?;
 
-        let data = self.strategy.fetch_prices()?;
+        let data = self.strategy.fetch_prices().inspect_err(|e| {
+            tracing::error!(stage = "fetch_prices", error = ?e, "strategy step failed");
+        })?;
         data.log();
 
         let Some(path) = S::select_path(data) else {
-            tracing::info!("{}: no arbitrage opportunity", S::NAME);
+            tracing::info!("no arbitrage opportunity");
             return Ok(());
         };
-        tracing::info!("{}: swap path {:?}", S::NAME, path);
+        tracing::info!(?path, "swap path selected");
 
-        let (amount_in, amount_out) = self.strategy.estimate(data, path)?;
+        let (amount_in, amount_out) = self.strategy.estimate(data, path).inspect_err(|e| {
+            tracing::error!(stage = "estimate", ?path, error = ?e, "strategy step failed");
+        })?;
         let predicted = S::cspr_profit(amount_in, amount_out, data, path);
-        tracing::info!("{}: predicted profit {:<10.4} CSPR", S::NAME, predicted);
+        tracing::info!(predicted_cspr = round_2dp(predicted), "predicted profit");
         if predicted < S::MIN_PROFIT_CSPR {
             tracing::info!(
-                "{}: profit below threshold ({} CSPR), skipping",
-                S::NAME,
-                S::MIN_PROFIT_CSPR
+                predicted_cspr = round_2dp(predicted),
+                min_profit_cspr = round_2dp(S::MIN_PROFIT_CSPR),
+                "profit below threshold, skipping"
             );
             return Ok(());
         }
 
-        let (actual_in, actual_out) =
-            self.strategy
-                .execute(path, amount_in, amount_out, self.caller)?;
+        let (actual_in, actual_out) = self
+            .strategy
+            .execute(path, amount_in, amount_out, self.caller)
+            .inspect_err(|e| {
+                tracing::error!(stage = "execute", ?path, error = ?e, "strategy step failed");
+            })?;
         let actual = S::cspr_profit(actual_in, actual_out, data, path);
-        tracing::info!("{}: actual profit {:<10.4} CSPR", S::NAME, actual);
+        let slippage = predicted - actual;
+        if actual < 0.0 {
+            tracing::warn!(
+                actual_cspr = round_2dp(actual),
+                predicted_cspr = round_2dp(predicted),
+                slippage_cspr = round_2dp(slippage),
+                "swap completed at a loss"
+            );
+        } else {
+            tracing::info!(
+                actual_cspr = round_2dp(actual),
+                predicted_cspr = round_2dp(predicted),
+                slippage_cspr = round_2dp(slippage),
+                "swap completed"
+            );
+        }
         Ok(())
     }
 }

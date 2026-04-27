@@ -5,6 +5,7 @@ use odra_cli::{cspr, scenario::Error};
 use mockall::automock;
 
 use super::path::Path;
+use crate::bot::utils::motes_to_token;
 use crate::contracts::ContractRefs;
 
 /// Delta-specific on-chain operations: mint positions, swap. (Approvals are
@@ -39,11 +40,21 @@ impl DeltaOps for RealDeltaOps<'_> {
         amount_out: U256,
         recipient: Address,
     ) -> Result<Vec<U256>, Error> {
+        let gas_cspr = if path.is_multi_hop() { 13 } else { 8 };
         if path.is_multi_hop() {
             self.env.set_gas(cspr!(13));
         } else {
             self.env.set_gas(cspr!(8));
         }
+        tracing::info!(
+            op = "delta.swap",
+            ?path,
+            amount_in_max = motes_to_token(amount_in),
+            amount_out = motes_to_token(amount_out),
+            gas_cspr,
+            recipient = ?recipient,
+            "calling on-chain"
+        );
         let result = self.refs.router()?.swap_tokens_for_exact_tokens(
             amount_out,
             amount_in,
@@ -51,6 +62,22 @@ impl DeltaOps for RealDeltaOps<'_> {
             recipient,
             u64::MAX,
         );
+        match result.as_slice() {
+            [first, .., last] => tracing::info!(
+                op = "delta.swap",
+                ?path,
+                actual_in = motes_to_token(*first),
+                actual_out = motes_to_token(*last),
+                hops = result.len(),
+                "swap returned"
+            ),
+            _ => tracing::warn!(
+                op = "delta.swap",
+                ?path,
+                len = result.len(),
+                "swap returned unexpected amounts shape"
+            ),
+        }
         Ok(result)
     }
 }

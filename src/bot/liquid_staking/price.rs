@@ -1,5 +1,8 @@
 use crate::{
-    bot::{liquid_staking::path::Path, utils},
+    bot::{
+        liquid_staking::path::Path,
+        utils::{self, motes_to_token, round_2dp},
+    },
     contracts::ContractRefs,
 };
 use odra::{
@@ -58,14 +61,14 @@ impl PriceData {
 impl crate::bot::engine::LogPrices for PriceData {
     fn log(&self) {
         tracing::info!(
-            dex_rate = self.dex_rate,
-            protocol_price = self.protocol_price,
-            diff = format!("{:+.2}%", self.diff_percentage),
-            wcspr_price_usd = self.wcspr_price,
-            stcspr_for_trade_unit = self.stcspr_for_trade_unit.as_u64(),
-            wcspr_for_trade_unit = self.wcspr_for_trade_unit.as_u64(),
-            "LS prices (CSPR) for trade size: ${}",
-            self.trade_size_usd
+            dex_rate = round_2dp(self.dex_rate),
+            protocol_price = round_2dp(self.protocol_price),
+            diff_pct = round_2dp(self.diff_percentage),
+            wcspr_price_usd = round_2dp(self.wcspr_price),
+            stcspr_for_trade_unit = motes_to_token(self.stcspr_for_trade_unit),
+            wcspr_for_trade_unit = motes_to_token(self.wcspr_for_trade_unit),
+            trade_size_usd = self.trade_size_usd,
+            "LS prices (CSPR)"
         );
     }
 }
@@ -78,7 +81,10 @@ impl LsPriceCalculator {
         // WCSPR USD price: reuse the same Market oracle as Casper Delta.
         let market = contracts.market()?;
         let state = market
-            .try_get_address_market_state(market.address())?
+            .try_get_address_market_state(market.address())
+            .inspect_err(|e| {
+                tracing::error!(op = "ls.market_state", error = ?e, "fetch market state failed");
+            })?
             .market_state;
         let wcspr_price = state.price().as_u64() as f64 / 100_000.0;
 

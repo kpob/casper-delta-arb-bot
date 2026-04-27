@@ -52,8 +52,12 @@ impl PendingClaims {
     /// Removes all claims whose `claimable_from_ms` has passed and rewrites the
     /// file. Call this after a successful `staked_cspr.claim()` transaction.
     pub fn remove_ready(&mut self) -> Result<(), Error> {
+        let before = self.claims.len();
         let now = now_ms();
         self.claims.retain(|c| c.claimable_from_ms > now);
+        let after = self.claims.len();
+        let dropped = before - after;
+        tracing::info!(dropped, remaining = after, "ls claims purged");
         if self.file_path.is_empty() {
             return Ok(());
         }
