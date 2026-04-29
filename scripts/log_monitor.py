@@ -19,8 +19,8 @@ import urllib.request
 from pathlib import Path
 
 # --- Config ---
-LOG_FILE = Path("../test.log")
-STATE_DIR = Path("./log_monitor")
+LOG_FILE = Path("/var/log/arb-bot2.log")
+STATE_DIR = Path("/var/lib/log_monitor")
 STATE_FILE = STATE_DIR / "state.json"
 LOCK_FILE = STATE_DIR / "lock"
 TARGET_MSGS = ("swap completed", "swap completed at a loss")
