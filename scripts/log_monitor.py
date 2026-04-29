@@ -19,11 +19,11 @@ import urllib.request
 from pathlib import Path
 
 # --- Config ---
-LOG_FILE = Path("/var/log/arb-bot2.log")
-STATE_DIR = Path("/var/lib/log_monitor")
+LOG_FILE = Path("../test.log")
+STATE_DIR = Path("./log_monitor")
 STATE_FILE = STATE_DIR / "state.json"
 LOCK_FILE = STATE_DIR / "lock"
-TARGET_MSG = "calling on-chain"
+TARGET_MSGS = ("swap completed", "swap completed at a loss")
 MAX_CHUNK = 3500          # Telegram hard limit is 4096 chars
 TELEGRAM_TIMEOUT = 10
 # --------------
@@ -106,8 +106,14 @@ def filter_matches(complete: bytes) -> list[str]:
         except json.JSONDecodeError:
             continue
         fields = obj.get("fields") or {}
-        if fields.get("message") == TARGET_MSG:
-            matches.append(raw.decode("utf-8", errors="replace"))
+
+        message = fields.get("message")
+        if message not in TARGET_MSGS:
+            continue
+        timestamp = obj.get("timestamp") or obj.get("time") or ""
+        actual = fields.get("actual_cspr")
+        prefix = "⚠️ swap at a loss" if message == "swap completed at a loss" else "✅ swap completed"
+        matches.append(f"[{timestamp}] {prefix} — profit: {actual} CSPR")
     return matches
 
 
@@ -117,7 +123,6 @@ def main() -> int:
     if not token or not chat_id:
         print("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set", file=sys.stderr)
         return 2
-
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     acquire_lock()  # held for the rest of process lifetime
 
@@ -133,7 +138,6 @@ def main() -> int:
     if start_offset >= cur_size:
         save_state(cur_inode, cur_size)
         return 0
-
     # Read exactly the new slice
     with LOG_FILE.open("rb") as f:
         f.seek(start_offset)
@@ -161,7 +165,7 @@ def main() -> int:
     # Send first, save state only on success — at-least-once delivery
     try:
         for i, body in enumerate(chunks, 1):
-            header = f"<b>🔔 {total} on-chain call(s) (part {i}/{len(chunks)})</b>"
+            header = f"<b>🔔 {total} swaps (part {i}/{len(chunks)})</b>"
             send_telegram(token, chat_id, f"{header}\n<pre>{body}</pre>")
             if i < len(chunks):
                 time.sleep(1)  # respect Telegram rate limits
