@@ -7,7 +7,8 @@ use super::path::Path;
 use super::price::{LsPriceCalculator, PriceData};
 use crate::bot::engine::{Engine, Strategy};
 use crate::bot::events::TradeScope;
-use crate::bot::utils::{motes_to_token, round_2dp};
+use crate::bot::report;
+use crate::bot::utils::motes_to_token;
 use crate::contracts::ContractRefs;
 
 const CLAIMS_FILE: &str = "pending_claims.json";
@@ -168,14 +169,6 @@ impl<'a> Strategy for LsStrategy<'a> {
         predicted_cspr: f64,
         actual_cspr: f64,
     ) {
-        tracing::info!(
-            ?path,
-            st_diff_pct = round_2dp(data.diff_percentage),
-            predicted_cspr = round_2dp(predicted_cspr),
-            actual_cspr = round_2dp(actual_cspr),
-            slippage_cspr = round_2dp(predicted_cspr - actual_cspr),
-            is_loss = actual_cspr < 0.0,
-            "ls.trade_executed"
-        );
+        report::trade::executed_ls(&path, data.diff_percentage, predicted_cspr, actual_cspr);
     }
 }

@@ -17,6 +17,7 @@ mod engine;
 mod events;
 mod liquid_staking;
 mod rebalancer;
+mod report;
 mod utils;
 
 pub struct Bot;

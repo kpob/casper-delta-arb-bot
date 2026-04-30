@@ -9,7 +9,7 @@ use super::{
 };
 use crate::bot::engine::{Engine, Strategy};
 use crate::bot::events::TradeScope;
-use crate::bot::utils::round_2dp;
+use crate::bot::report;
 
 pub type CasperDeltaEngine<'a> = Engine<CasperDeltaStrategy<'a>>;
 
@@ -86,15 +86,12 @@ impl<'a> Strategy for CasperDeltaStrategy<'a> {
         predicted_cspr: f64,
         actual_cspr: f64,
     ) {
-        tracing::info!(
-            ?path,
-            long_diff_pct = round_2dp(data.long_diff_percent),
-            short_diff_pct = round_2dp(data.short_diff_percent),
-            predicted_cspr = round_2dp(predicted_cspr),
-            actual_cspr = round_2dp(actual_cspr),
-            slippage_cspr = round_2dp(predicted_cspr - actual_cspr),
-            is_loss = actual_cspr < 0.0,
-            "delta.trade_executed"
+        report::trade::executed_delta(
+            &path,
+            data.long_diff_percent,
+            data.short_diff_percent,
+            predicted_cspr,
+            actual_cspr,
         );
     }
 }

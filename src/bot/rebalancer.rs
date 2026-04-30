@@ -34,6 +34,7 @@ use odra_cli::{cspr, scenario::Error};
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
+use super::report;
 use super::utils::motes_to_token;
 use crate::contracts::ContractRefs;
 
@@ -67,7 +68,7 @@ impl Asset {
         Asset::Short,
     ];
 
-    fn slug(&self) -> &'static str {
+    pub(super) fn slug(&self) -> &'static str {
         match self {
             Asset::Cspr => "cspr",
             Asset::Wcspr => "wcspr",
@@ -340,50 +341,19 @@ impl<'a> Rebalancer<'a> {
             self.ops.claim()?;
         }
         self.state.clear()?;
-        tracing::info!(elapsed_secs = elapsed, "pending unstake cleared");
-        self.emit_claim_matured(elapsed)?;
+        report::rebalance::pending_unstake_cleared(elapsed);
+        report::rebalance::executed_claim(elapsed, self.snapshot()?);
         Ok(true)
     }
 
-    fn emit_asset_rebalance(
-        &self,
-        direction: &str,
-        asset: Asset,
-        pre_balance: U256,
-        lvls: Levels,
-        ops: &[RebalanceOp],
-    ) -> Result<(), Error> {
-        let action = format!("{direction}_{}", asset.slug());
-        tracing::info!(
-            action = %action,
-            asset = ?asset,
-            pre_balance = motes_to_token(pre_balance),
-            target_midpoint = motes_to_token(lvls.midpoint()),
-            ops = ?ops,
-            cspr_balance = motes_to_token(self.balance(Asset::Cspr)?),
-            wcspr_balance = motes_to_token(self.balance(Asset::Wcspr)?),
-            stcspr_balance = motes_to_token(self.balance(Asset::StCspr)?),
-            long_balance = motes_to_token(self.balance(Asset::Long)?),
-            short_balance = motes_to_token(self.balance(Asset::Short)?),
-            "rebalance_executed"
-        );
-        Ok(())
-    }
-
-    fn emit_claim_matured(&self, elapsed_secs: u64) -> Result<(), Error> {
-        let ops = [RebalanceOp::Claim];
-        tracing::info!(
-            action = "claim_matured",
-            elapsed_secs,
-            ops = ?ops,
-            cspr_balance = motes_to_token(self.balance(Asset::Cspr)?),
-            wcspr_balance = motes_to_token(self.balance(Asset::Wcspr)?),
-            stcspr_balance = motes_to_token(self.balance(Asset::StCspr)?),
-            long_balance = motes_to_token(self.balance(Asset::Long)?),
-            short_balance = motes_to_token(self.balance(Asset::Short)?),
-            "rebalance_executed"
-        );
-        Ok(())
+    fn snapshot(&self) -> Result<report::rebalance::BalanceSnapshot, Error> {
+        Ok(report::rebalance::BalanceSnapshot {
+            cspr: motes_to_token(self.balance(Asset::Cspr)?),
+            wcspr: motes_to_token(self.balance(Asset::Wcspr)?),
+            stcspr: motes_to_token(self.balance(Asset::StCspr)?),
+            long: motes_to_token(self.balance(Asset::Long)?),
+            short: motes_to_token(self.balance(Asset::Short)?),
+        })
     }
 
     fn balance(&self, asset: Asset) -> Result<U256, Error> {
@@ -407,7 +377,14 @@ impl<'a> Rebalancer<'a> {
             let deficit = lvls.midpoint() - bal;
             let ops = self.fill(asset, deficit)?;
             if !ops.is_empty() {
-                self.emit_asset_rebalance("fill", asset, bal, lvls, &ops)?;
+                report::rebalance::executed_asset(
+                    "fill",
+                    asset,
+                    motes_to_token(bal),
+                    motes_to_token(lvls.midpoint()),
+                    &ops,
+                    self.snapshot()?,
+                );
             }
             return Ok(true);
         }
@@ -415,7 +392,14 @@ impl<'a> Rebalancer<'a> {
             let excess = bal - lvls.midpoint();
             let ops = self.drain(asset, excess)?;
             if !ops.is_empty() {
-                self.emit_asset_rebalance("drain", asset, bal, lvls, &ops)?;
+                report::rebalance::executed_asset(
+                    "drain",
+                    asset,
+                    motes_to_token(bal),
+                    motes_to_token(lvls.midpoint()),
+                    &ops,
+                    self.snapshot()?,
+                );
             }
             return Ok(true);
         }
@@ -473,9 +457,7 @@ impl<'a> Rebalancer<'a> {
                 }
                 Asset::StCspr => {
                     if self.state.load()?.is_some() {
-                        tracing::warn!(
-                            "cannot unstake while a prior unstake is pending; deferring"
-                        );
+                        report::rebalance::cant_unstake_pending();
                         break;
                     }
                     let stcspr_amount = self.rates.cspr_to_stcspr(take_cspr)?;
@@ -511,7 +493,7 @@ impl<'a> Rebalancer<'a> {
         let avail = self.spendable(Asset::Cspr)?;
         let amount = min_u256(avail, deficit);
         if amount.is_zero() {
-            tracing::warn!("cannot fill WCSPR: CSPR source below floor");
+            report::rebalance::cant_fill_wcspr();
             return Ok(Vec::new());
         }
         if !self.dry_run {
@@ -528,7 +510,7 @@ impl<'a> Rebalancer<'a> {
         let cspr_needed = self.rates.stcspr_to_cspr(stcspr_deficit)?;
         let cspr_amount = min_u256(cspr_avail, cspr_needed);
         if cspr_amount.is_zero() {
-            tracing::warn!("cannot fill stCSPR: CSPR source below floor");
+            report::rebalance::cant_fill_stcspr();
             return Ok(Vec::new());
         }
         if !self.dry_run {
@@ -549,7 +531,7 @@ impl<'a> Rebalancer<'a> {
         };
         let wcspr_spend = min_u256(wcspr_avail, wcspr_needed);
         if wcspr_spend.is_zero() {
-            tracing::warn!("cannot fill: WCSPR source below floor");
+            report::rebalance::cant_fill_position();
             return Ok(Vec::new());
         }
         if !self.dry_run {
@@ -628,14 +610,14 @@ impl<'a> Rebalancer<'a> {
                 cspr: motes_to_token(amount),
             }]);
         }
-        tracing::warn!("cannot drain CSPR: both WCSPR and stCSPR at/above max");
+        report::rebalance::cant_drain_cspr();
         Ok(Vec::new())
     }
 
     /// Drain excess stCSPR by unstaking (async, single-slot).
     fn drain_stcspr(&self, excess_stcspr: U256) -> Result<Vec<RebalanceOp>, Error> {
         if self.state.load()?.is_some() {
-            tracing::warn!("cannot unstake excess stCSPR: prior unstake pending");
+            report::rebalance::cant_unstake_pending();
             return Ok(Vec::new());
         }
         if !self.dry_run {
@@ -790,133 +772,104 @@ impl<'a> RealOps<'a> {
 
 impl Ops for RealOps<'_> {
     fn wrap(&self, cspr_amount: U256) -> Result<(), Error> {
-        let amount = U512::from(cspr_amount.as_u128());
+        let amount_u512 = U512::from(cspr_amount.as_u128());
+        let amount = motes_to_token(cspr_amount);
         self.env.set_gas(cspr!(3));
-        tracing::info!(
-            op = "wrap",
-            amount = motes_to_token(cspr_amount),
-            gas_cspr = 3,
-            "calling on-chain"
-        );
+        report::on_chain::calling("wrap", amount, 3);
         self.refs
             .wcspr()?
-            .with_tokens(amount)
+            .with_tokens(amount_u512)
             .try_deposit()
-            .inspect_err(|e| {
-                tracing::error!(op = "wrap", amount = motes_to_token(cspr_amount), error = ?e, "wcspr deposit failed");
-            })?;
+            .inspect_err(|e| report::on_chain::failed("wrap", amount, e))?;
         Ok(())
     }
 
     fn unwrap(&self, wcspr_amount: U256) -> Result<(), Error> {
+        let amount = motes_to_token(wcspr_amount);
         self.set_gas();
-        tracing::info!(
-            op = "unwrap",
-            amount = motes_to_token(wcspr_amount),
-            gas_cspr = 4,
-            "calling on-chain"
-        );
-        self.refs.wcspr()?.try_withdraw(&wcspr_amount).inspect_err(|e| {
-            tracing::error!(op = "unwrap", amount = motes_to_token(wcspr_amount), error = ?e, "wcspr withdraw failed");
-        })?;
+        report::on_chain::calling("unwrap", amount, 4);
+        self.refs
+            .wcspr()?
+            .try_withdraw(&wcspr_amount)
+            .inspect_err(|e| report::on_chain::failed("unwrap", amount, e))?;
         Ok(())
     }
 
     fn stake(&self, cspr_amount: U256) -> Result<(), Error> {
+        let amount_u512 = U512::from(cspr_amount.as_u128());
+        let amount = motes_to_token(cspr_amount);
         self.env.set_gas(cspr!(9));
-        let amount = U512::from(cspr_amount.as_u128());
-        tracing::info!(
-            op = "stake",
-            amount = motes_to_token(cspr_amount),
-            gas_cspr = 9,
-            "calling on-chain"
-        );
+        report::on_chain::calling("stake", amount, 9);
         self.refs
             .staked_cspr()?
-            .with_tokens(amount)
+            .with_tokens(amount_u512)
             .try_stake()
-            .inspect_err(|e| {
-                tracing::error!(op = "stake", amount = motes_to_token(cspr_amount), error = ?e, "stake failed");
-            })?;
+            .inspect_err(|e| report::on_chain::failed("stake", amount, e))?;
         Ok(())
     }
 
     fn unstake(&self, stcspr_amount: U256) -> Result<(), Error> {
+        let amount = motes_to_token(stcspr_amount);
         self.env.set_gas(cspr!(8));
-        tracing::info!(
-            op = "unstake",
-            amount = motes_to_token(stcspr_amount),
-            gas_cspr = 8,
-            "calling on-chain"
-        );
-        self.refs.staked_cspr()?.try_unstake(stcspr_amount).inspect_err(|e| {
-            tracing::error!(op = "unstake", amount = motes_to_token(stcspr_amount), error = ?e, "unstake failed");
-        })?;
+        report::on_chain::calling("unstake", amount, 8);
+        self.refs
+            .staked_cspr()?
+            .try_unstake(stcspr_amount)
+            .inspect_err(|e| report::on_chain::failed("unstake", amount, e))?;
         Ok(())
     }
 
     fn claim(&self) -> Result<(), Error> {
         self.env.set_gas(cspr!(8));
-        tracing::info!(op = "claim", gas_cspr = 8, "calling on-chain");
-        self.refs.staked_cspr()?.try_claim().inspect_err(|e| {
-            tracing::error!(op = "claim", error = ?e, "claim failed");
-        })?;
+        report::on_chain::calling_claim(8);
+        self.refs
+            .staked_cspr()?
+            .try_claim()
+            .inspect_err(|e| report::on_chain::failed_claim(e))?;
         Ok(())
     }
 
     fn buy_long(&self, wcspr_amount: U256) -> Result<(), Error> {
+        let amount = motes_to_token(wcspr_amount);
         self.set_gas();
-        tracing::info!(
-            op = "buy_long",
-            amount = motes_to_token(wcspr_amount),
-            gas_cspr = 4,
-            "calling on-chain"
-        );
-        self.refs.market()?.try_deposit_long(wcspr_amount).inspect_err(|e| {
-            tracing::error!(op = "buy_long", amount = motes_to_token(wcspr_amount), error = ?e, "deposit_long failed");
-        })?;
+        report::on_chain::calling("buy_long", amount, 4);
+        self.refs
+            .market()?
+            .try_deposit_long(wcspr_amount)
+            .inspect_err(|e| report::on_chain::failed("buy_long", amount, e))?;
         Ok(())
     }
 
     fn sell_long(&self, long_amount: U256) -> Result<(), Error> {
+        let amount = motes_to_token(long_amount);
         self.set_gas();
-        tracing::info!(
-            op = "sell_long",
-            amount = motes_to_token(long_amount),
-            gas_cspr = 4,
-            "calling on-chain"
-        );
-        self.refs.market()?.try_withdraw_long(long_amount).inspect_err(|e| {
-            tracing::error!(op = "sell_long", amount = motes_to_token(long_amount), error = ?e, "withdraw_long failed");
-        })?;
+        report::on_chain::calling("sell_long", amount, 4);
+        self.refs
+            .market()?
+            .try_withdraw_long(long_amount)
+            .inspect_err(|e| report::on_chain::failed("sell_long", amount, e))?;
         Ok(())
     }
 
     fn buy_short(&self, wcspr_amount: U256) -> Result<(), Error> {
+        let amount = motes_to_token(wcspr_amount);
         self.set_gas();
-        tracing::info!(
-            op = "buy_short",
-            amount = motes_to_token(wcspr_amount),
-            gas_cspr = 4,
-            "calling on-chain"
-        );
-        self.refs.market()?.try_deposit_short(wcspr_amount).inspect_err(|e| {
-            tracing::error!(op = "buy_short", amount = motes_to_token(wcspr_amount), error = ?e, "deposit_short failed");
-        })?;
+        report::on_chain::calling("buy_short", amount, 4);
+        self.refs
+            .market()?
+            .try_deposit_short(wcspr_amount)
+            .inspect_err(|e| report::on_chain::failed("buy_short", amount, e))?;
         Ok(())
     }
 
     fn sell_short(&self, short_amount: U256) -> Result<(), Error> {
+        let amount = motes_to_token(short_amount);
         self.set_gas();
-        tracing::info!(
-            op = "sell_short",
-            amount = motes_to_token(short_amount),
-            gas_cspr = 4,
-            "calling on-chain"
-        );
-        self.refs.market()?.try_withdraw_short(short_amount).inspect_err(|e| {
-            tracing::error!(op = "sell_short", amount = motes_to_token(short_amount), error = ?e, "withdraw_short failed");
-        })?;
+        report::on_chain::calling("sell_short", amount, 4);
+        self.refs
+            .market()?
+            .try_withdraw_short(short_amount)
+            .inspect_err(|e| report::on_chain::failed("sell_short", amount, e))?;
         Ok(())
     }
 
