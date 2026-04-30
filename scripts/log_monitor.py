@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Tail a JSON log, filter by message, send matches to Telegram.
+"""Tail a JSON log, filter by level/message, send matches to Telegram.
 
 Reads only bytes appended since the last run (byte-offset state),
 handles log rotation by inode tracking, and guards against
 concurrent runs with a lock file.
+
+Forwards two classes of events:
+  - Headline events (info-level): delta.trade_executed,
+    ls.trade_executed, rebalance_executed.
+  - Any error-level event ("something nasty is happening").
 """
 
 from __future__ import annotations
@@ -23,7 +28,12 @@ LOG_FILE = Path("/var/log/arb-bot2.log")
 STATE_DIR = Path("/var/lib/log_monitor")
 STATE_FILE = STATE_DIR / "state.json"
 LOCK_FILE = STATE_DIR / "lock"
-TARGET_MSGS = ("swap completed", "swap completed at a loss")
+HEADLINE_MSGS = frozenset({
+    "delta.trade_executed",
+    "ls.trade_executed",
+    "rebalance_executed",
+})
+FORWARD_LEVELS = frozenset({"ERROR"})
 MAX_CHUNK = 3500          # Telegram hard limit is 4096 chars
 TELEGRAM_TIMEOUT = 10
 # --------------
@@ -96,6 +106,87 @@ def decide_start_offset(
     return prev_offset
 
 
+def tx_hash_suffix(obj: dict) -> str:
+    """Pull tx_hash from the parent `event` span if present."""
+    span = obj.get("span") or {}
+    tx = span.get("tx_hash")
+    if not tx or tx == "-":
+        return ""
+    short = tx[:10] + "…" if len(tx) > 12 else tx
+    return f" (tx {short})"
+
+
+def render_trade_executed(strategy: str, fields: dict, suffix: str) -> str:
+    path = fields.get("path", "?")
+    predicted = fields.get("predicted_cspr")
+    actual = fields.get("actual_cspr")
+    slippage = fields.get("slippage_cspr")
+    is_loss = fields.get("is_loss")
+    glyph = "⚠️" if is_loss else "✅"
+    head = f"{glyph} {strategy}.trade_executed{suffix}"
+    if strategy == "delta":
+        cond = f"long {fields.get('long_diff_pct')}%, short {fields.get('short_diff_pct')}%"
+    else:
+        cond = f"st {fields.get('st_diff_pct')}%"
+    body = f"path={path}\n{cond}\npredicted={predicted} CSPR  actual={actual} CSPR  slippage={slippage} CSPR"
+    return f"{head}\n{body}"
+
+
+def render_rebalance_executed(fields: dict, suffix: str) -> str:
+    action = fields.get("action", "?")
+    head = f"🔧 rebalance_executed: {action}{suffix}"
+    asset = fields.get("asset")
+    pre = fields.get("pre_balance")
+    target = fields.get("target_midpoint")
+    ops = fields.get("ops", "")
+    decision = []
+    if asset is not None:
+        line = f"asset={asset}"
+        if pre is not None:
+            line += f"  pre={pre}"
+        if target is not None:
+            line += f"  target={target}"
+        decision.append(line)
+    decision.append(f"ops={ops}")
+    balances = (
+        f"balances: cspr={fields.get('cspr_balance')}  "
+        f"wcspr={fields.get('wcspr_balance')}  stcspr={fields.get('stcspr_balance')}  "
+        f"long={fields.get('long_balance')}  short={fields.get('short_balance')}"
+    )
+    return head + "\n" + "\n".join(decision) + "\n" + balances
+
+
+def render_error(obj: dict, fields: dict, suffix: str) -> str:
+    msg = fields.get("message", "")
+    # Drop the message field; render everything else as key=val.
+    rendered = "  ".join(
+        f"{k}={v}" for k, v in fields.items() if k != "message"
+    )
+    head = f"🚨 ERROR: {msg}{suffix}"
+    return f"{head}\n{rendered}" if rendered else head
+
+
+def render(obj: dict) -> str | None:
+    """Return a rendered Telegram block for a matching log line, else None."""
+    fields = obj.get("fields") or {}
+    timestamp = obj.get("timestamp") or obj.get("time") or ""
+    msg = fields.get("message", "")
+    level = obj.get("level", "")
+    suffix = tx_hash_suffix(obj)
+
+    if msg == "delta.trade_executed":
+        body = render_trade_executed("delta", fields, suffix)
+    elif msg == "ls.trade_executed":
+        body = render_trade_executed("ls", fields, suffix)
+    elif msg == "rebalance_executed":
+        body = render_rebalance_executed(fields, suffix)
+    elif level in FORWARD_LEVELS:
+        body = render_error(obj, fields, suffix)
+    else:
+        return None
+    return f"[{timestamp}]\n{body}"
+
+
 def filter_matches(complete: bytes) -> list[str]:
     matches: list[str] = []
     for raw in complete.splitlines():
@@ -105,15 +196,10 @@ def filter_matches(complete: bytes) -> list[str]:
             obj = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        fields = obj.get("fields") or {}
-
-        message = fields.get("message")
-        if message not in TARGET_MSGS:
+        rendered = render(obj)
+        if rendered is None:
             continue
-        timestamp = obj.get("timestamp") or obj.get("time") or ""
-        actual = fields.get("actual_cspr")
-        prefix = "⚠️ swap at a loss" if message == "swap completed at a loss" else "✅ swap completed"
-        matches.append(f"[{timestamp}] {prefix} — profit: {actual} CSPR")
+        matches.append(rendered)
     return matches
 
 
@@ -165,7 +251,7 @@ def main() -> int:
     # Send first, save state only on success — at-least-once delivery
     try:
         for i, body in enumerate(chunks, 1):
-            header = f"<b>🔔 {total} swaps (part {i}/{len(chunks)})</b>"
+            header = f"<b>🔔 {total} events (part {i}/{len(chunks)})</b>"
             send_telegram(token, chat_id, f"{header}\n<pre>{body}</pre>")
             if i < len(chunks):
                 time.sleep(1)  # respect Telegram rate limits

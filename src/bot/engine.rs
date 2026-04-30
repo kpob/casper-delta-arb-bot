@@ -52,6 +52,15 @@ pub trait Strategy {
         amount_out: U256,
         caller: Address,
     ) -> Result<(U256, U256), Error>;
+
+    /// Emit the strategy's `*.trade_executed` headline event with conditions,
+    /// outcome, and slippage. Called by the engine after `execute` succeeds.
+    fn log_trade_executed(
+        data: Self::PriceData,
+        path: Self::Path,
+        predicted_cspr: f64,
+        actual_cspr: f64,
+    );
 }
 
 pub struct Engine<S: Strategy> {
@@ -86,27 +95,23 @@ impl<S: Strategy> Engine<S> {
 
     #[instrument(skip(self), fields(strategy = S::NAME))]
     fn try_trade(&mut self) -> Result<(), Error> {
-        self.strategy.before_trade().inspect_err(|e| {
-            tracing::error!(stage = "before_trade", error = ?e, "strategy step failed");
-        })?;
-
-        let data = self.strategy.fetch_prices().inspect_err(|e| {
-            tracing::error!(stage = "fetch_prices", error = ?e, "strategy step failed");
-        })?;
-        data.log();
+        self.strategy.before_trade()?;
+        let data = self.strategy.fetch_prices()?;
 
         let Some(path) = S::select_path(data) else {
-            tracing::info!("no arbitrage opportunity");
+            tracing::debug!("no arbitrage opportunity");
             return Ok(());
         };
         tracing::info!(?path, "swap path selected");
 
-        let (amount_in, amount_out) = self.strategy.estimate(data, path).inspect_err(|e| {
-            tracing::error!(stage = "estimate", ?path, error = ?e, "strategy step failed");
-        })?;
+        let (amount_in, amount_out) = self
+            .strategy
+            .estimate(data, path)
+            .inspect_err(|_| data.log())?;
         let predicted = S::cspr_profit(amount_in, amount_out, data, path);
         tracing::info!(predicted_cspr = round_2dp(predicted), "predicted profit");
         if predicted < S::MIN_PROFIT_CSPR {
+            data.log();
             tracing::info!(
                 predicted_cspr = round_2dp(predicted),
                 min_profit_cspr = round_2dp(S::MIN_PROFIT_CSPR),
@@ -115,29 +120,11 @@ impl<S: Strategy> Engine<S> {
             return Ok(());
         }
 
-        let (actual_in, actual_out) = self
-            .strategy
-            .execute(path, amount_in, amount_out, self.caller)
-            .inspect_err(|e| {
-                tracing::error!(stage = "execute", ?path, error = ?e, "strategy step failed");
-            })?;
+        let (actual_in, actual_out) =
+            self.strategy
+                .execute(path, amount_in, amount_out, self.caller)?;
         let actual = S::cspr_profit(actual_in, actual_out, data, path);
-        let slippage = predicted - actual;
-        if actual < 0.0 {
-            tracing::warn!(
-                actual_cspr = round_2dp(actual),
-                predicted_cspr = round_2dp(predicted),
-                slippage_cspr = round_2dp(slippage),
-                "swap completed at a loss"
-            );
-        } else {
-            tracing::info!(
-                actual_cspr = round_2dp(actual),
-                predicted_cspr = round_2dp(predicted),
-                slippage_cspr = round_2dp(slippage),
-                "swap completed"
-            );
-        }
+        S::log_trade_executed(data, path, predicted, actual);
         Ok(())
     }
 }

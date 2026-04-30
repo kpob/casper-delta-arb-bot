@@ -66,6 +66,33 @@ impl Asset {
         Asset::Long,
         Asset::Short,
     ];
+
+    fn slug(&self) -> &'static str {
+        match self {
+            Asset::Cspr => "cspr",
+            Asset::Wcspr => "wcspr",
+            Asset::StCspr => "stcspr",
+            Asset::Long => "long",
+            Asset::Short => "short",
+        }
+    }
+}
+
+/// One on-chain operation performed during a rebalance tick. Amounts are in
+/// whole-token units (rounded 2dp via `motes_to_token`) so the Debug repr that
+/// lands in the `ops` field of `rebalance_executed` reads cleanly.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fields are read via Debug-derive in tracing's `?ops` field
+pub enum RebalanceOp {
+    Wrap { cspr: f64 },
+    Unwrap { wcspr: f64 },
+    Stake { cspr: f64 },
+    Unstake { stcspr: f64 },
+    Claim,
+    BuyLong { wcspr: f64 },
+    SellLong { long: f64 },
+    BuyShort { wcspr: f64 },
+    SellShort { short: f64 },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -283,7 +310,6 @@ impl<'a> Rebalancer<'a> {
     /// engine action on each event-loop tick.
     #[instrument(skip_all)]
     pub fn rebalance(&self) -> Result<(), Error> {
-        self.log_state()?;
         if self.try_claim_matured()? {
             return Ok(());
         }
@@ -296,23 +322,6 @@ impl<'a> Rebalancer<'a> {
         Ok(())
     }
 
-    fn log_state(&self) -> Result<(), Error> {
-        for asset in Asset::PRIORITY {
-            let bal = self.balance(asset)?;
-            let lvls = self.cfg.levels(asset);
-            tracing::info!(
-                asset = ?asset,
-                balance = motes_to_token(bal),
-                min = motes_to_token(lvls.min),
-                max = motes_to_token(lvls.max),
-                deficit = motes_to_token(lvls.min.saturating_sub(bal)),
-                headroom = motes_to_token(lvls.max.saturating_sub(bal)),
-                "asset balance"
-            );
-        }
-        Ok(())
-    }
-
     fn try_claim_matured(&self) -> Result<bool, Error> {
         let Some(pending) = self.state.load()? else {
             return Ok(false);
@@ -320,20 +329,61 @@ impl<'a> Rebalancer<'a> {
         let now = self.clock.now_secs();
         let elapsed = now.saturating_sub(pending.created_at_secs);
         if elapsed < UNSTAKE_MATURITY_SECS {
-            tracing::info!(
+            tracing::debug!(
                 elapsed_secs = elapsed,
                 maturity_secs = UNSTAKE_MATURITY_SECS,
                 "pending unstake still maturing"
             );
             return Ok(false);
         }
-        tracing::info!("claiming matured unstake");
         if !self.dry_run {
             self.ops.claim()?;
         }
         self.state.clear()?;
         tracing::info!(elapsed_secs = elapsed, "pending unstake cleared");
+        self.emit_claim_matured(elapsed)?;
         Ok(true)
+    }
+
+    fn emit_asset_rebalance(
+        &self,
+        direction: &str,
+        asset: Asset,
+        pre_balance: U256,
+        lvls: Levels,
+        ops: &[RebalanceOp],
+    ) -> Result<(), Error> {
+        let action = format!("{direction}_{}", asset.slug());
+        tracing::info!(
+            action = %action,
+            asset = ?asset,
+            pre_balance = motes_to_token(pre_balance),
+            target_midpoint = motes_to_token(lvls.midpoint()),
+            ops = ?ops,
+            cspr_balance = motes_to_token(self.balance(Asset::Cspr)?),
+            wcspr_balance = motes_to_token(self.balance(Asset::Wcspr)?),
+            stcspr_balance = motes_to_token(self.balance(Asset::StCspr)?),
+            long_balance = motes_to_token(self.balance(Asset::Long)?),
+            short_balance = motes_to_token(self.balance(Asset::Short)?),
+            "rebalance_executed"
+        );
+        Ok(())
+    }
+
+    fn emit_claim_matured(&self, elapsed_secs: u64) -> Result<(), Error> {
+        let ops = [RebalanceOp::Claim];
+        tracing::info!(
+            action = "claim_matured",
+            elapsed_secs,
+            ops = ?ops,
+            cspr_balance = motes_to_token(self.balance(Asset::Cspr)?),
+            wcspr_balance = motes_to_token(self.balance(Asset::Wcspr)?),
+            stcspr_balance = motes_to_token(self.balance(Asset::StCspr)?),
+            long_balance = motes_to_token(self.balance(Asset::Long)?),
+            short_balance = motes_to_token(self.balance(Asset::Short)?),
+            "rebalance_executed"
+        );
+        Ok(())
     }
 
     fn balance(&self, asset: Asset) -> Result<U256, Error> {
@@ -355,22 +405,18 @@ impl<'a> Rebalancer<'a> {
         let drain_trigger = lvls.max + margin;
         if bal < fill_trigger {
             let deficit = lvls.midpoint() - bal;
-            tracing::info!(
-                balance = motes_to_token(bal),
-                deficit = motes_to_token(deficit),
-                "below min, filling"
-            );
-            self.fill(asset, deficit)?;
+            let ops = self.fill(asset, deficit)?;
+            if !ops.is_empty() {
+                self.emit_asset_rebalance("fill", asset, bal, lvls, &ops)?;
+            }
             return Ok(true);
         }
         if bal > drain_trigger {
             let excess = bal - lvls.midpoint();
-            tracing::info!(
-                balance = motes_to_token(bal),
-                excess = motes_to_token(excess),
-                "above max, draining"
-            );
-            self.drain(asset, excess)?;
+            let ops = self.drain(asset, excess)?;
+            if !ops.is_empty() {
+                self.emit_asset_rebalance("drain", asset, bal, lvls, &ops)?;
+            }
             return Ok(true);
         }
         Ok(false)
@@ -379,7 +425,7 @@ impl<'a> Rebalancer<'a> {
     // ---- Fill -------------------------------------------------------------
 
     #[instrument(skip(self), fields(asset = ?asset))]
-    fn fill(&self, asset: Asset, deficit: U256) -> Result<(), Error> {
+    fn fill(&self, asset: Asset, deficit: U256) -> Result<Vec<RebalanceOp>, Error> {
         match asset {
             Asset::Cspr => self.fill_cspr(deficit),
             Asset::Wcspr => self.single_source_fill_cspr_to(Asset::Wcspr, deficit),
@@ -391,7 +437,7 @@ impl<'a> Rebalancer<'a> {
 
     /// Fill CSPR from WCSPR (unwrap) then stCSPR (unstake). Sources are tried
     /// in descending balance order, each bounded by its own `min*1.25` floor.
-    fn fill_cspr(&self, deficit: U256) -> Result<(), Error> {
+    fn fill_cspr(&self, deficit: U256) -> Result<Vec<RebalanceOp>, Error> {
         let wcspr_avail = self.spendable(Asset::Wcspr)?;
         let stcspr_avail_cspr = {
             let spendable = self.spendable(Asset::StCspr)?;
@@ -405,6 +451,7 @@ impl<'a> Rebalancer<'a> {
         // highest-balance source first
         sources.sort_by(|a, b| b.1.cmp(&a.1));
 
+        let mut ops = Vec::new();
         let mut remaining = deficit;
         for (src, avail_in_cspr) in sources {
             if remaining.is_zero() {
@@ -416,13 +463,12 @@ impl<'a> Rebalancer<'a> {
             }
             match src {
                 Asset::Wcspr => {
-                    tracing::info!(
-                        amount = motes_to_token(take_cspr),
-                        "unwrapping WCSPR for CSPR"
-                    );
                     if !self.dry_run {
                         self.ops.unwrap(take_cspr)?;
                     }
+                    ops.push(RebalanceOp::Unwrap {
+                        wcspr: motes_to_token(take_cspr),
+                    });
                     remaining -= take_cspr;
                 }
                 Asset::StCspr => {
@@ -436,69 +482,65 @@ impl<'a> Rebalancer<'a> {
                     if stcspr_amount.is_zero() {
                         continue;
                     }
-                    tracing::info!(
-                        stcspr = motes_to_token(stcspr_amount),
-                        cspr = motes_to_token(take_cspr),
-                        "unstaking stCSPR"
-                    );
                     if !self.dry_run {
                         self.ops.unstake(stcspr_amount)?;
                     }
+                    ops.push(RebalanceOp::Unstake {
+                        stcspr: motes_to_token(stcspr_amount),
+                    });
                     let now = self.clock.now_secs();
                     self.state.save(&PendingUnstake {
                         created_at_secs: now,
                     })?;
-                    tracing::info!(
-                        created_at_secs = now,
-                        source = "fill_cspr",
-                        "pending unstake recorded"
-                    );
                     remaining = remaining.saturating_sub(take_cspr);
                 }
                 _ => unreachable!(),
             }
         }
-        Ok(())
+        Ok(ops)
     }
 
     /// Fill WCSPR (only source is CSPR). Argument is WCSPR deficit; WCSPR is
     /// 1:1 with CSPR on wrap.
-    fn single_source_fill_cspr_to(&self, target: Asset, deficit: U256) -> Result<(), Error> {
+    fn single_source_fill_cspr_to(
+        &self,
+        target: Asset,
+        deficit: U256,
+    ) -> Result<Vec<RebalanceOp>, Error> {
         debug_assert_eq!(target, Asset::Wcspr);
         let avail = self.spendable(Asset::Cspr)?;
         let amount = min_u256(avail, deficit);
         if amount.is_zero() {
             tracing::warn!("cannot fill WCSPR: CSPR source below floor");
-            return Ok(());
+            return Ok(Vec::new());
         }
-        tracing::info!(amount = motes_to_token(amount), "wrapping CSPR → WCSPR");
         if !self.dry_run {
             self.ops.wrap(amount)?;
         }
-        Ok(())
+        Ok(vec![RebalanceOp::Wrap {
+            cspr: motes_to_token(amount),
+        }])
     }
 
     /// Fill stCSPR (only source is CSPR via staking).
-    fn fill_stcspr(&self, stcspr_deficit: U256) -> Result<(), Error> {
+    fn fill_stcspr(&self, stcspr_deficit: U256) -> Result<Vec<RebalanceOp>, Error> {
         let cspr_avail = self.spendable(Asset::Cspr)?;
         let cspr_needed = self.rates.stcspr_to_cspr(stcspr_deficit)?;
         let cspr_amount = min_u256(cspr_avail, cspr_needed);
         if cspr_amount.is_zero() {
             tracing::warn!("cannot fill stCSPR: CSPR source below floor");
-            return Ok(());
+            return Ok(Vec::new());
         }
-        tracing::info!(
-            amount = motes_to_token(cspr_amount),
-            "staking CSPR → stCSPR"
-        );
         if !self.dry_run {
             self.ops.stake(cspr_amount)?;
         }
-        Ok(())
+        Ok(vec![RebalanceOp::Stake {
+            cspr: motes_to_token(cspr_amount),
+        }])
     }
 
     /// Fill a position token (long or short) by buying with WCSPR.
-    fn fill_position(&self, asset: Asset, token_deficit: U256) -> Result<(), Error> {
+    fn fill_position(&self, asset: Asset, token_deficit: U256) -> Result<Vec<RebalanceOp>, Error> {
         let wcspr_avail = self.spendable(Asset::Wcspr)?;
         let wcspr_needed = match asset {
             Asset::Long => self.rates.wcspr_in_for_long_out(token_deficit)?,
@@ -508,12 +550,8 @@ impl<'a> Rebalancer<'a> {
         let wcspr_spend = min_u256(wcspr_avail, wcspr_needed);
         if wcspr_spend.is_zero() {
             tracing::warn!("cannot fill: WCSPR source below floor");
-            return Ok(());
+            return Ok(Vec::new());
         }
-        tracing::info!(
-            wcspr = motes_to_token(wcspr_spend),
-            "buying position with WCSPR"
-        );
         if !self.dry_run {
             match asset {
                 Asset::Long => self.ops.buy_long(wcspr_spend)?,
@@ -521,36 +559,44 @@ impl<'a> Rebalancer<'a> {
                 _ => unreachable!(),
             }
         }
-        Ok(())
+        let wcspr = motes_to_token(wcspr_spend);
+        Ok(vec![match asset {
+            Asset::Long => RebalanceOp::BuyLong { wcspr },
+            Asset::Short => RebalanceOp::BuyShort { wcspr },
+            _ => unreachable!(),
+        }])
     }
 
     // ---- Drain ------------------------------------------------------------
 
     #[instrument(skip(self), fields(asset = ?asset))]
-    fn drain(&self, asset: Asset, excess: U256) -> Result<(), Error> {
+    fn drain(&self, asset: Asset, excess: U256) -> Result<Vec<RebalanceOp>, Error> {
         match asset {
             Asset::Cspr => self.drain_cspr(excess),
             Asset::Wcspr => {
-                tracing::info!(amount = motes_to_token(excess), "unwrapping WCSPR → CSPR");
                 if !self.dry_run {
                     self.ops.unwrap(excess)?;
                 }
-                Ok(())
+                Ok(vec![RebalanceOp::Unwrap {
+                    wcspr: motes_to_token(excess),
+                }])
             }
             Asset::StCspr => self.drain_stcspr(excess),
             Asset::Long => {
-                tracing::info!(amount = motes_to_token(excess), "selling long");
                 if !self.dry_run {
                     self.ops.sell_long(excess)?;
                 }
-                Ok(())
+                Ok(vec![RebalanceOp::SellLong {
+                    long: motes_to_token(excess),
+                }])
             }
             Asset::Short => {
-                tracing::info!(amount = motes_to_token(excess), "selling short");
                 if !self.dry_run {
                     self.ops.sell_short(excess)?;
                 }
-                Ok(())
+                Ok(vec![RebalanceOp::SellShort {
+                    short: motes_to_token(excess),
+                }])
             }
         }
     }
@@ -558,42 +604,40 @@ impl<'a> Rebalancer<'a> {
     /// Drain excess CSPR. Prefer wrap (reversible, cheapest gas); fall back
     /// to stake only when WCSPR has no headroom. Amount is clamped to the
     /// chosen sink's headroom so we never push it past its own max.
-    fn drain_cspr(&self, excess: U256) -> Result<(), Error> {
+    fn drain_cspr(&self, excess: U256) -> Result<Vec<RebalanceOp>, Error> {
         let wcspr_bal = self.balances.wcspr()?;
         let wcspr_headroom = self.cfg.wcspr.max.saturating_sub(wcspr_bal);
         if !wcspr_headroom.is_zero() {
             let amount = min_u256(excess, wcspr_headroom);
-            tracing::info!(amount = motes_to_token(amount), "wrapping CSPR → WCSPR");
             if !self.dry_run {
                 self.ops.wrap(amount)?;
             }
-            return Ok(());
+            return Ok(vec![RebalanceOp::Wrap {
+                cspr: motes_to_token(amount),
+            }]);
         }
         let stcspr_bal = self.balances.stcspr()?;
         let stcspr_headroom = self.cfg.stcspr.max.saturating_sub(stcspr_bal);
         let stcspr_headroom_cspr = self.rates.stcspr_to_cspr(stcspr_headroom)?;
         if !stcspr_headroom_cspr.is_zero() {
             let amount = min_u256(excess, stcspr_headroom_cspr);
-            tracing::info!(amount = motes_to_token(amount), "staking CSPR → stCSPR");
             if !self.dry_run {
                 self.ops.stake(amount)?;
             }
-            return Ok(());
+            return Ok(vec![RebalanceOp::Stake {
+                cspr: motes_to_token(amount),
+            }]);
         }
         tracing::warn!("cannot drain CSPR: both WCSPR and stCSPR at/above max");
-        Ok(())
+        Ok(Vec::new())
     }
 
     /// Drain excess stCSPR by unstaking (async, single-slot).
-    fn drain_stcspr(&self, excess_stcspr: U256) -> Result<(), Error> {
+    fn drain_stcspr(&self, excess_stcspr: U256) -> Result<Vec<RebalanceOp>, Error> {
         if self.state.load()?.is_some() {
             tracing::warn!("cannot unstake excess stCSPR: prior unstake pending");
-            return Ok(());
+            return Ok(Vec::new());
         }
-        tracing::info!(
-            stcspr = motes_to_token(excess_stcspr),
-            "unstaking excess stCSPR"
-        );
         if !self.dry_run {
             self.ops.unstake(excess_stcspr)?;
         }
@@ -601,12 +645,9 @@ impl<'a> Rebalancer<'a> {
         self.state.save(&PendingUnstake {
             created_at_secs: now,
         })?;
-        tracing::info!(
-            created_at_secs = now,
-            source = "drain_stcspr",
-            "pending unstake recorded"
-        );
-        Ok(())
+        Ok(vec![RebalanceOp::Unstake {
+            stcspr: motes_to_token(excess_stcspr),
+        }])
     }
 
     // ---- Helpers ----------------------------------------------------------

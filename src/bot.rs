@@ -60,18 +60,12 @@ impl Scenario for Bot {
             );
             let _enter = span.enter();
             tracing::info!("event received");
-            if let Err(e) = rebalancer.rebalance() {
-                tracing::error!("Rebalancer error: {:?}", e);
+            let _ = rebalancer.rebalance();
+            if let Ok(false) = cd_engine.handle_event(&event) {
+                break;
             }
-            match cd_engine.handle_event(&event) {
-                Ok(true) => {}
-                Ok(false) => break,
-                Err(e) => tracing::error!("Delta engine error: {:?}", e),
-            }
-            match ls_engine.handle_event(&event) {
-                Ok(true) => {}
-                Ok(false) => break,
-                Err(e) => tracing::error!("LS engine error: {:?}", e),
+            if let Ok(false) = ls_engine.handle_event(&event) {
+                break;
             }
         }
         tracing::info!("event source closed; shutting down");

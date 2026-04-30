@@ -126,7 +126,7 @@ impl EventSource for TimerEventSource {
             self.first = false;
             return Some(BotEvent::TimerTick);
         }
-        tracing::info!("Sleeping for {} seconds...", self.interval.as_secs());
+        tracing::debug!("Sleeping for {} seconds...", self.interval.as_secs());
         sleep(self.interval);
         Some(BotEvent::TimerTick)
     }
@@ -237,7 +237,7 @@ impl KafkaEventSource {
                             &scoped_addresses,
                         );
                         for event in events {
-                            tracing::info!("Kafka event received: {:?}", event);
+                            tracing::debug!("Kafka event received: {:?}", event);
                             if tx.send(event).is_err() {
                                 tracing::info!("Kafka consumer thread exiting: channel closed");
                                 return;
@@ -256,7 +256,7 @@ impl KafkaEventSource {
     fn spawn_timer(fallback_secs: u64, tx: mpsc::Sender<BotEvent>) {
         std::thread::spawn(move || loop {
             sleep(Duration::from_secs(fallback_secs));
-            tracing::info!("Timer fallback tick ({}s)", fallback_secs);
+            tracing::debug!("Timer fallback tick ({}s)", fallback_secs);
             if tx.send(BotEvent::TimerTick).is_err() {
                 tracing::info!("Timer thread exiting: channel closed");
                 break;
