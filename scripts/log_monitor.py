@@ -13,6 +13,7 @@ Forwards two classes of events:
 
 from __future__ import annotations
 
+import argparse
 import fcntl
 import html
 import json
@@ -21,7 +22,11 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+LOCAL_TZ = ZoneInfo("Europe/Warsaw")
 
 # --- Config ---
 LOG_FILE = Path("/var/log/arb-bot2.log")
@@ -106,6 +111,19 @@ def decide_start_offset(
     return prev_offset
 
 
+def format_timestamp(raw: str) -> str:
+    """Render a tracing UTC timestamp as `HH:MM CET, YYYY-MM-DD` in local TZ."""
+    if not raw:
+        return ""
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(LOCAL_TZ).strftime("%H:%M CET, %Y-%m-%d")
+
+
 def tx_hash_suffix(obj: dict) -> str:
     """Pull tx_hash from the parent `event` span if present."""
     span = obj.get("span") or {}
@@ -169,7 +187,7 @@ def render_error(obj: dict, fields: dict, suffix: str) -> str:
 def render(obj: dict) -> str | None:
     """Return a rendered Telegram block for a matching log line, else None."""
     fields = obj.get("fields") or {}
-    timestamp = obj.get("timestamp") or obj.get("time") or ""
+    timestamp = format_timestamp(obj.get("timestamp") or obj.get("time") or "")
     msg = fields.get("message", "")
     level = obj.get("level", "")
     suffix = tx_hash_suffix(obj)
@@ -203,7 +221,49 @@ def filter_matches(complete: bytes) -> list[str]:
     return matches
 
 
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Read the whole log file, print rendered events to stdout, and "
+        "skip Telegram, lock, and state. Useful for previewing output.",
+    )
+    p.add_argument(
+        "--log-file",
+        type=Path,
+        default=None,
+        help=f"Log file to read (default: {LOG_FILE}).",
+    )
+    return p.parse_args()
+
+
+def run_dry_run(log_file: Path) -> int:
+    if not log_file.exists():
+        print(f"log file does not exist: {log_file}", file=sys.stderr)
+        return 1
+
+    data = log_file.read_bytes()
+    matches = filter_matches(data)
+    if not matches:
+        print("(no matching events)")
+        return 0
+
+    chunks = chunk_lines(matches, MAX_CHUNK)
+    total = len(matches)
+    for i, body in enumerate(chunks, 1):
+        print(f"=== {total} events (part {i}/{len(chunks)}) ===")
+        print(body)
+    return 0
+
+
 def main() -> int:
+    args = parse_args()
+    log_file = args.log_file or LOG_FILE
+
+    if args.dry_run:
+        return run_dry_run(log_file)
+
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
@@ -212,10 +272,10 @@ def main() -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     acquire_lock()  # held for the rest of process lifetime
 
-    if not LOG_FILE.exists():
+    if not log_file.exists():
         return 0
 
-    st = LOG_FILE.stat()
+    st = log_file.stat()
     cur_inode, cur_size = st.st_ino, st.st_size
 
     prev_inode, prev_offset = load_state()
@@ -225,7 +285,7 @@ def main() -> int:
         save_state(cur_inode, cur_size)
         return 0
     # Read exactly the new slice
-    with LOG_FILE.open("rb") as f:
+    with log_file.open("rb") as f:
         f.seek(start_offset)
         new_data = f.read(cur_size - start_offset)
 
